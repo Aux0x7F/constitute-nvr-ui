@@ -20,6 +20,13 @@ type SegmentAccumulator = {
   chunks: Uint8Array[];
 };
 
+type CameraTile = {
+  id: string;
+  title: string;
+  subtitle: string;
+  status: "configured" | "discovered";
+};
+
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
   throw new Error("#app not found");
@@ -52,7 +59,13 @@ app.innerHTML = `
     </section>
 
     <section class="panel">
-      <h2>Commands</h2>
+      <h2>Security Cameras</h2>
+      <p id="cameraSummary" class="muted">No Cameras</p>
+      <div id="cameraGrid" class="cameraGrid">
+        <article class="cameraEmpty">No Cameras</article>
+      </div>
+
+      <h3>Commands</h3>
       <div class="row wrap">
         <button id="listSources" disabled>list_sources</button>
         <button id="discoverOnvif" disabled>discover_onvif</button>
@@ -96,6 +109,8 @@ const segmentNameInput = byId<HTMLInputElement>("segmentName");
 const statusText = byId<HTMLParagraphElement>("status");
 const logEl = byId<HTMLPreElement>("log");
 const downloadsEl = byId<HTMLUListElement>("downloads");
+const cameraSummaryEl = byId<HTMLParagraphElement>("cameraSummary");
+const cameraGridEl = byId<HTMLDivElement>("cameraGrid");
 
 const connectBtn = byId<HTMLButtonElement>("connect");
 const disconnectBtn = byId<HTMLButtonElement>("disconnect");
@@ -106,6 +121,7 @@ const getSegmentBtn = byId<HTMLButtonElement>("getSegment");
 
 let session: SessionState | null = null;
 let pendingSegment: SegmentAccumulator | null = null;
+const cameraTiles = new Map<string, CameraTile>();
 
 connectBtn.addEventListener("click", async () => {
   try {
@@ -197,6 +213,7 @@ async function connect(): Promise<void> {
         disconnectBtn.disabled = false;
         connectBtn.disabled = true;
         appendLog("session handshake complete");
+        void sendCommand({ cmd: "list_sources" });
         resolve();
       } catch (err) {
         reject(new Error(`handshake failed: ${(err as Error).message}`));
@@ -235,6 +252,16 @@ function onCipherFrame(raw: string): void {
 function handlePayload(body: Record<string, unknown>): void {
   const cmd = String(body.cmd ?? "");
 
+  if (cmd === "list_sources") {
+    applySources(body);
+    return;
+  }
+
+  if (cmd === "discover_onvif") {
+    applyOnvifDiscovery(body);
+    return;
+  }
+
   if (cmd === "segment_start") {
     pendingSegment = {
       name: String(body.name ?? "segment.bin"),
@@ -254,6 +281,119 @@ function handlePayload(body: Record<string, unknown>): void {
     const url = URL.createObjectURL(new Blob([joined], { type: "video/mp4" }));
     addDownloadLink(pendingSegment.name, url, joined.length);
     pendingSegment = null;
+  }
+}
+
+function applySources(body: Record<string, unknown>): void {
+  const raw = Array.isArray(body.sources) ? body.sources : [];
+  const sources = raw
+    .map((value) => String(value ?? "").trim())
+    .filter((value) => value.length > 0);
+
+  for (const sourceId of sources) {
+    cameraTiles.set(sourceId, {
+      id: sourceId,
+      title: sourceId,
+      subtitle: "Configured source",
+      status: "configured",
+    });
+  }
+
+  if (!sourceIdInput.value.trim() && sources.length > 0) {
+    sourceIdInput.value = sources[0];
+  }
+
+  renderCameraTiles();
+}
+
+function applyOnvifDiscovery(body: Record<string, unknown>): void {
+  const raw = Array.isArray(body.cameras) ? body.cameras : [];
+
+  raw.forEach((camera, index) => {
+    if (!camera || typeof camera !== "object") {
+      return;
+    }
+
+    const rec = camera as Record<string, unknown>;
+    const host = String(
+      rec.host ?? rec.ip ?? rec.address ?? rec.hostname ?? "",
+    ).trim();
+    const name = String(rec.name ?? rec.model ?? rec.manufacturer ?? "").trim();
+    const fallbackId = host || `camera-${index + 1}`;
+    const id = String(
+      rec.sourceId ?? rec.source_id ?? rec.id ?? rec.devicePk ?? fallbackId,
+    ).trim();
+
+    if (!id) {
+      return;
+    }
+
+    const title = name || id;
+    const subtitle = host ? `ONVIF ${host}` : "ONVIF discovered";
+
+    if (!cameraTiles.has(id)) {
+      cameraTiles.set(id, {
+        id,
+        title,
+        subtitle,
+        status: "discovered",
+      });
+      return;
+    }
+
+    const existing = cameraTiles.get(id)!;
+    cameraTiles.set(id, {
+      ...existing,
+      title: existing.title || title,
+      subtitle: existing.subtitle || subtitle,
+    });
+  });
+
+  renderCameraTiles();
+}
+
+function renderCameraTiles(): void {
+  cameraGridEl.innerHTML = "";
+
+  if (cameraTiles.size === 0) {
+    cameraSummaryEl.textContent = "No Cameras";
+    const empty = document.createElement("article");
+    empty.className = "cameraEmpty";
+    empty.textContent = "No Cameras";
+    cameraGridEl.appendChild(empty);
+    return;
+  }
+
+  const tiles = Array.from(cameraTiles.values()).sort((a, b) =>
+    a.title.localeCompare(b.title),
+  );
+
+  cameraSummaryEl.textContent = `${tiles.length} camera${tiles.length === 1 ? "" : "s"}`;
+
+  for (const tile of tiles) {
+    const article = document.createElement("article");
+    article.className = "cameraTile";
+
+    const top = document.createElement("div");
+    top.className = "cameraTop";
+
+    const title = document.createElement("strong");
+    title.textContent = tile.title;
+
+    const badge = document.createElement("span");
+    badge.className = `cameraBadge ${tile.status}`;
+    badge.textContent = tile.status;
+
+    top.appendChild(title);
+    top.appendChild(badge);
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "cameraSub";
+    subtitle.textContent = tile.subtitle;
+
+    article.appendChild(top);
+    article.appendChild(subtitle);
+    cameraGridEl.appendChild(article);
   }
 }
 
