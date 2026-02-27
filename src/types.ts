@@ -28,6 +28,7 @@ export type CipherEnvelope = {
 };
 
 export type ListSourcesCommand = { cmd: "list_sources" };
+export type ListSourceStatesCommand = { cmd: "list_source_states" };
 export type DiscoverOnvifCommand = { cmd: "discover_onvif" };
 export type ListSegmentsCommand = {
   cmd: "list_segments";
@@ -42,6 +43,7 @@ export type GetSegmentCommand = {
 
 export type ClientCommand =
   | ListSourcesCommand
+  | ListSourceStatesCommand
   | DiscoverOnvifCommand
   | ListSegmentsCommand
   | GetSegmentCommand;

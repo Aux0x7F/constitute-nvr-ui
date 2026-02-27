@@ -115,6 +115,7 @@ const cameraGridEl = byId<HTMLDivElement>("cameraGrid");
 const connectBtn = byId<HTMLButtonElement>("connect");
 const disconnectBtn = byId<HTMLButtonElement>("disconnect");
 const listSourcesBtn = byId<HTMLButtonElement>("listSources");
+const listSourceStatesBtn = byId<HTMLButtonElement>("listSourceStates");
 const discoverOnvifBtn = byId<HTMLButtonElement>("discoverOnvif");
 const listSegmentsBtn = byId<HTMLButtonElement>("listSegments");
 const getSegmentBtn = byId<HTMLButtonElement>("getSegment");
@@ -214,6 +215,7 @@ async function connect(): Promise<void> {
         connectBtn.disabled = true;
         appendLog("session handshake complete");
         void sendCommand({ cmd: "list_sources" });
+        void sendCommand({ cmd: "list_source_states" });
         resolve();
       } catch (err) {
         reject(new Error(`handshake failed: ${(err as Error).message}`));
@@ -302,6 +304,34 @@ function applySources(body: Record<string, unknown>): void {
   if (!sourceIdInput.value.trim() && sources.length > 0) {
     sourceIdInput.value = sources[0];
   }
+
+  renderCameraTiles();
+}
+
+function applySourceStates(body: Record<string, unknown>): void {
+  const raw = Array.isArray(body.states) ? body.states : [];
+  raw.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const rec = entry as Record<string, unknown>;
+    const id = String(rec.sourceId ?? "").trim();
+    if (!id) return;
+    const sourceState = String(rec.state ?? "unknown").trim() || "unknown";
+    const subtitle = `State: ${sourceState}`;
+    if (!cameraTiles.has(id)) {
+      cameraTiles.set(id, {
+        id,
+        title: id,
+        subtitle,
+        status: "configured",
+      });
+      return;
+    }
+    const existing = cameraTiles.get(id)!;
+    cameraTiles.set(id, {
+      ...existing,
+      subtitle,
+    });
+  });
 
   renderCameraTiles();
 }
@@ -476,6 +506,19 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+function applyLaunchParams(): void {
+  const params = new URLSearchParams(window.location.search);
+  const ws = String(params.get("ws") || "").trim();
+  const identityId = String(params.get("identityId") || "").trim();
+  const devicePk = String(params.get("devicePk") || "").trim();
+
+  if (ws) urlInput.value = ws;
+  if (identityId && !identityIdInput.value.trim()) identityIdInput.value = identityId;
+  if (devicePk && !devicePkInput.value.trim()) devicePkInput.value = devicePk;
+}
+
+applyLaunchParams();
+
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id) as T | null;
   if (!element) {
@@ -483,3 +526,6 @@ function byId<T extends HTMLElement>(id: string): T {
   }
   return element;
 }
+
+
+

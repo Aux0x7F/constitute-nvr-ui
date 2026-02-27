@@ -1,25 +1,37 @@
 # constitute-nvr-ui
 
-`constitute-nvr-ui` is the browser client module for the `constitute-nvr` service.
+`constitute-nvr-ui` is the browser app module for `constitute-nvr`.
 
 Current scope is MVP/manual-test support:
 - establish identity-bound encrypted websocket session with `constitute-nvr`
-- issue NVR control commands (`list_sources`, `discover_onvif`, `list_segments`, `get_segment`)
+- issue NVR control commands (`list_sources`, `list_source_states`, `discover_onvif`, `list_segments`, `get_segment`)
 - reconstruct segment chunks and expose downloadable media files
 
 ## Security Position
 - UI does not receive executable code from NVR transport.
 - Session channel encryption is negotiated client-side.
-- Identity/wallet ownership is intended to remain in `constitute` shell.
+- Identity/wallet ownership remains in `constitute` shell; this UI consumes explicit operator-provided secrets for now.
 
 ## Run
 ```bash
 npm install
 npm run dev
+npm run build
 ```
 
-Default target endpoint in UI:
-- `ws://127.0.0.1:8456/session`
+## Manifest + Launch
+- App manifest: `app.manifest.json`
+- Default manifest entry: `dist/index.html`
+- Build output is committed for manifest-driven remote launch (CDN/GitHub static fetch).
+
+## URL Parameters (Optional)
+When launched from the web shell, these can pre-fill fields:
+- `ws`
+- `identityId`
+- `devicePk`
+
+Example:
+`.../dist/index.html?ws=wss://gateway.example/session&identityId=<id>&devicePk=<pk>`
 
 ## Contract Inputs
 To connect, provide:
@@ -27,10 +39,7 @@ To connect, provide:
 - `devicePk`
 - `identitySecretHex`
 
-These must match NVR config (`/etc/constitute-nvr/config.json`).
-
-## Integration Direction
-This repo is intended to be consumed by `constitute` as an app module (same-origin subroute first).
+These must match `constitute-nvr` config (`/etc/constitute-nvr/config.json`).
 
 ## Status
 MVP/manual-test ready. Not production-ready.

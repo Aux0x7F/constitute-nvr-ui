@@ -18,10 +18,11 @@ It is not a transport/gateway replacement and does not host identity authority.
 
 ## MVP Commands
 - `list_sources`
-- `discover_onvif`
+- `list_source_states`\n- `discover_onvif`
 - `list_segments`
 - `get_segment`
 
 ## Integration Target
-Short-term: same-origin subroute consumption by `constitute` shell.
+Short-term: manifest-driven remote module launch by `constitute` shell.
 Long-term: permissioned app manifest + capability gating in shell.
+
