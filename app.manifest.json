@@ -1,0 +1,10 @@
+{
+  "id": "constitute-nvr-ui",
+  "label": "Security Cameras",
+  "description": "Encrypted session client for constitute-nvr",
+  "entry": "index.html",
+  "capabilities": [
+    "camera"
+  ],
+  "version": "0.1.0"
+}
