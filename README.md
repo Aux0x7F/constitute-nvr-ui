@@ -4,7 +4,7 @@
 
 Current scope is MVP/manual-test support:
 - establish identity-bound encrypted websocket session with `constitute-nvr`
-- issue NVR control commands (`list_sources`, `list_source_states`, `discover_onvif`, `list_segments`, `get_segment`)
+- issue NVR control commands (`list_sources`, `list_source_states`, `discover_onvif`, `discover_reolink`, `probe_reolink`, `read_reolink_state`, `setup_reolink`, `list_segments`, `get_segment`)
 - reconstruct segment chunks and expose downloadable media files
 
 ## Security Position
@@ -29,6 +29,8 @@ When launched from the web shell, these can pre-fill fields:
 - `ws`
 - `identityId`
 - `devicePk`
+- `insecure` (optional, enables unsigned MVP hello mode)
+- `autoconnect` (optional, auto-connects on load)
 
 Example:
 `.../dist/index.html?ws=wss://gateway.example/session&identityId=<id>&devicePk=<pk>`
@@ -37,9 +39,10 @@ Example:
 To connect, provide:
 - `identityId`
 - `devicePk`
-- `identitySecretHex`
+- `identitySecretHex` (required unless launched with `insecure=1`)
 
-These must match `constitute-nvr` config (`/etc/constitute-nvr/config.json`).
+Values must match `constitute-nvr` config (`/etc/constitute-nvr/config.json`) for normal mode.
+In MVP mode (`api.allow_unsigned_hello_mvp=true` + `insecure=1`), the UI can connect without exposing identity secret material in the shell.
 
 ## Status
 MVP/manual-test ready. Not production-ready.

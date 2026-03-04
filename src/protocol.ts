@@ -13,6 +13,7 @@ import type {
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
+const ZERO_SECRET_HEX = "0".repeat(64);
 
 export type HandshakeState = {
   privateKey: Uint8Array;
@@ -28,7 +29,7 @@ export function createHandshake(config: ConnectionConfig): HandshakeState {
   const proofMaterial = `${config.identityId}|${config.devicePk}|${clientKeyB64}|${ts}`;
   const proofBytes = hmac(
     sha256,
-    hexToBytes(config.identitySecretHex),
+    identitySecretBytes(config),
     TEXT_ENCODER.encode(proofMaterial),
   );
 
@@ -60,10 +61,17 @@ export function deriveSessionKey(
   return hkdf(
     sha256,
     shared,
-    hexToBytes(config.identitySecretHex),
+    identitySecretBytes(config),
     context,
     32,
   );
+}
+
+function identitySecretBytes(config: ConnectionConfig): Uint8Array {
+  const hex = String(config.identitySecretHex || "").trim();
+  if (hex) return hexToBytes(hex);
+  if (config.allowUnsignedHelloMvp) return hexToBytes(ZERO_SECRET_HEX);
+  throw new Error("identity secret is required unless unsigned MVP mode is enabled");
 }
 
 export function encryptCommand(
