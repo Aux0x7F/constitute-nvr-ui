@@ -5,6 +5,8 @@
 Current scope is MVP/manual-test support:
 - establish identity-bound encrypted websocket session with `constitute-nvr`
 - issue NVR control commands (`list_sources`, `list_source_states`, `discover_onvif`, `discover_reolink`, `probe_reolink`, `read_reolink_state`, `setup_reolink`, `list_segments`, `get_segment`)
+- auto-run source/state and ONVIF/Reolink discovery sweep on connect (and periodic refresh)
+- refreshes local camera tiles immediately from `setup_reolink` auto-upsert responses
 - reconstruct segment chunks and expose downloadable media files
 
 ## Security Position

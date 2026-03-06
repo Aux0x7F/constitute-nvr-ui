@@ -156,6 +156,8 @@ let session: SessionState | null = null;
 let pendingSegment: SegmentAccumulator | null = null;
 let lastSegmentObjectUrl: string | null = null;
 const cameraTiles = new Map<string, CameraTile>();
+const AUTO_DISCOVERY_INTERVAL_MS = 20_000;
+let autoDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
 
 connectBtn.addEventListener("click", async () => {
   try {
@@ -280,6 +282,7 @@ async function connect(): Promise<void> {
 
         ws.onmessage = (innerEvent) => onCipherFrame(String(innerEvent.data));
         ws.onclose = () => {
+          stopAutoDiscoveryLoop();
           appendLog("session closed");
           setStatus("Disconnected", true);
           setCommandEnabled(false);
@@ -290,8 +293,7 @@ async function connect(): Promise<void> {
         disconnectBtn.disabled = false;
         connectBtn.disabled = true;
         appendLog("session handshake complete");
-        void sendCommand({ cmd: "list_sources" });
-        void sendCommand({ cmd: "list_source_states" });
+        startAutoDiscoveryLoop();
         resolve();
       } catch (err) {
         reject(new Error(`handshake failed: ${(err as Error).message}`));
@@ -362,6 +364,9 @@ function handlePayload(body: Record<string, unknown>): void {
 
   if (cmd === "setup_reolink") {
     appendLog(`setup result: ${JSON.stringify(body.result ?? {}, null, 2)}`);
+    applySetupReolinkResult(body);
+    void sendCommand({ cmd: "list_sources" });
+    void sendCommand({ cmd: "list_source_states" });
     return;
   }
 
@@ -390,6 +395,34 @@ function handlePayload(body: Record<string, unknown>): void {
     segmentPreview.src = url;
     pendingSegment = null;
   }
+}
+
+function applySetupReolinkResult(body: Record<string, unknown>): void {
+  const source = body.source;
+  if (!source || typeof source !== "object") {
+    return;
+  }
+
+  const rec = source as Record<string, unknown>;
+  const sourceId = String(rec.sourceId ?? rec.source_id ?? "").trim();
+  if (!sourceId) {
+    return;
+  }
+
+  const host = String(rec.onvifHost ?? rec.onvif_host ?? "").trim();
+  const title = String(rec.name ?? sourceId).trim() || sourceId;
+  const subtitle = host ? `Configured source (${host})` : "Configured source";
+
+  cameraTiles.set(sourceId, {
+    id: sourceId,
+    title,
+    subtitle,
+    status: "configured",
+  });
+
+  sourceIdInput.value = sourceId;
+  cameraIpInput.value = host || cameraIpInput.value;
+  renderCameraTiles();
 }
 
 function applySources(body: Record<string, unknown>): void {
@@ -574,6 +607,30 @@ function renderCameraTiles(): void {
   }
 }
 
+function stopAutoDiscoveryLoop(): void {
+  if (autoDiscoveryTimer !== null) {
+    clearInterval(autoDiscoveryTimer);
+    autoDiscoveryTimer = null;
+  }
+}
+
+async function runAutoDiscoverySweep(): Promise<void> {
+  if (!session) return;
+  await sendCommand({ cmd: "list_sources" });
+  await sendCommand({ cmd: "list_source_states" });
+  await sendCommand({ cmd: "discover_onvif" });
+  await sendCommand({ cmd: "discover_reolink" });
+}
+
+function startAutoDiscoveryLoop(): void {
+  stopAutoDiscoveryLoop();
+  appendLog('auto discovery enabled');
+  void runAutoDiscoverySweep();
+  autoDiscoveryTimer = setInterval(() => {
+    void runAutoDiscoverySweep();
+  }, AUTO_DISCOVERY_INTERVAL_MS);
+}
+
 async function sendCommand(command: ClientCommand): Promise<void> {
   if (!session) {
     appendLog("not connected");
@@ -610,6 +667,7 @@ function readConfig(): ConnectionConfig {
 }
 
 function closeSession(): void {
+  stopAutoDiscoveryLoop();
   if (session) {
     session.ws.close();
     session = null;
