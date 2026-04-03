@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",
@@ -14,6 +15,7 @@
     "@noble/hashes": "^1.8.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.2",
     "typescript": "^5.9.2",
     "vite": "^6.2.0"
   }

@@ -390,6 +390,13 @@ function markAllTiles(state: "waiting" | "connecting" | "unavailable", detail: s
   }
 }
 
+function hasLiveTiles(): boolean {
+  for (const tile of cameraTiles.values()) {
+    if (tile.badge.textContent === "live") return true;
+  }
+  return false;
+}
+
 function escapeHtml(value: string): string {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -579,8 +586,10 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   const answer = extractAnswerDescription(result);
   await peerConnection.setRemoteDescription(answer);
   appendLog("remote answer applied");
-  setBadge("connecting", "warn");
-  setSummaryState("connecting");
+  if (!hasLiveTiles()) {
+    setBadge("connecting", "warn");
+    setSummaryState("connecting");
+  }
 }
 
 async function reconnect(): Promise<void> {

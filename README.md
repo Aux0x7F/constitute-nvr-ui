@@ -19,6 +19,7 @@ Current scope is managed-app MVP support:
 npm install
 npm run dev
 npm run build
+npm run test:e2e
 ```
 
 ## Manifest + Launch
