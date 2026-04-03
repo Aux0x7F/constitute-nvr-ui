@@ -3,26 +3,35 @@
 ## Role
 `constitute-nvr-ui` is the presentation/control client for `constitute-nvr`.
 
+It is a Pages-hosted managed app surface.
 It is not a transport/gateway replacement and does not host identity authority.
 
 ## Boundaries
-- Transport/session endpoint: `constitute-nvr` (`/session` websocket)
-- Identity authority and wallet: `constitute` shell (target integration)
-- Swarm/gateway backbone: `constitute-gateway`
+- Identity authority and wallet: `constitute` shell
+- Browser control/signaling boundary: `constitute-gateway`
+- Hosted media/service endpoint: `constitute-nvr`
 
-## Session Flow
-1. Client sends plaintext `hello` with identity + proof.
-2. NVR responds with `hello_ack` and server key.
-3. Client derives symmetric session key (ECDH + HKDF).
-4. Command/data frames use encrypted `cipher` envelopes.
+## Managed Launch Flow
+1. `constitute` opens `tld/constitute-nvr-ui/` with a non-secret `launchId`.
+2. Shell exposes short-lived launch context through same-origin ephemeral bootstrap (`BroadcastChannel` / storage).
+3. NVR UI redeems launch context and learns target gateway/service metadata.
+4. UI requests or receives gateway-mediated launch authorization.
+5. UI uses gateway-mediated signaling to establish WebRTC with the hosted NVR service.
+6. UI renders the live camera grid from WebRTC preview tracks.
 
-## MVP Commands
-- `list_sources`
-- `list_source_states`\n- `discover_onvif`
-- `list_segments`
-- `get_segment`
+## UI Scope
+Current managed MVP:
+- no-camera state
+- connecting state
+- live camera tiles
+- unavailable/error state
 
-## Integration Target
-Short-term: manifest-driven remote module launch by `constitute` shell.
-Long-term: permissioned app manifest + capability gating in shell.
+Advanced configuration remains out of scope for this slice except navigation placeholders.
 
+## Media Direction
+- WebRTC
+- H.264 preview
+- substream / low-resolution feed where available for multi-camera grid
+
+## Legacy Debug Mode
+Standalone direct `/session` websocket attachment remains available for lab/debug, but it is not the canonical production launch path.

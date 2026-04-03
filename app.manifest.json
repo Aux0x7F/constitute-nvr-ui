@@ -1,7 +1,7 @@
 {
   "id": "constitute-nvr-ui",
   "label": "Security Cameras",
-  "description": "Encrypted session client for constitute-nvr",
+  "description": "Gateway-managed Security Cameras app surface for constitute-nvr",
   "entry": "dist/index.html",
   "capabilities": [
     "camera"
