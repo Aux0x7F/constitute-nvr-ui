@@ -2,17 +2,17 @@
 
 `constitute-nvr-ui` is the browser app module for `constitute-nvr`.
 
-Current scope is MVP/manual-test support:
-- establish identity-bound encrypted websocket session with `constitute-nvr`
-- issue NVR control commands (`list_sources`, `list_source_states`, `discover_onvif`, `discover_reolink`, `probe_reolink`, `read_reolink_state`, `setup_reolink`, `list_segments`, `get_segment`)
-- auto-run source/state and ONVIF/Reolink discovery sweep on connect (and periodic refresh)
-- refreshes local camera tiles immediately from `setup_reolink` auto-upsert responses
-- reconstruct segment chunks and expose downloadable media files
+Current scope is managed-app MVP support:
+- load as a Pages-hosted app surface at `tld/constitute-nvr-ui/`
+- redeem short-lived launch context from `constitute`
+- establish gateway-mediated signaling/auth for `constitute-nvr`
+- render a simple live camera grid over WebRTC H.264 preview tracks
 
 ## Security Position
 - UI does not receive executable code from NVR transport.
-- Session channel encryption is negotiated client-side.
-- Identity/wallet ownership remains in `constitute` shell; this UI consumes explicit operator-provided secrets for now.
+- Identity/wallet ownership remains in `constitute` shell.
+- Managed launch must not require long-lived identity secrets in URL parameters.
+- Direct/manual debug mode may still use explicit operator-supplied secrets outside the canonical flow.
 
 ## Run
 ```bash
@@ -24,27 +24,18 @@ npm run build
 ## Manifest + Launch
 - App manifest: `app.manifest.json`
 - Default manifest entry: `dist/index.html`
-- Build output is committed for manifest-driven remote launch (CDN/GitHub static fetch).
+- Build output is committed for static hosting under the site domain.
 
-## URL Parameters (Optional)
-When launched from the web shell, these can pre-fill fields:
-- `ws`
-- `identityId`
-- `devicePk`
-- `insecure` (optional, enables unsigned MVP hello mode)
-- `autoconnect` (optional, auto-connects on load)
+## Managed Launch Bootstrap
+Canonical launch direction:
+- shell opens this app with a short-lived `launchId`
+- shell exposes matching launch context through same-origin ephemeral bootstrap
+- app redeems that context and then negotiates signaling/auth through the owned gateway
 
-Example:
-`.../dist/index.html?ws=wss://gateway.example/session&identityId=<id>&devicePk=<pk>`
+Long-lived identity secrets should not be passed in query parameters.
 
-## Contract Inputs
-To connect, provide:
-- `identityId`
-- `devicePk`
-- `identitySecretHex` (required unless launched with `insecure=1`)
-
-Values must match `constitute-nvr` config (`/etc/constitute-nvr/config.json`) for normal mode.
-In MVP mode (`api.allow_unsigned_hello_mvp=true` + `insecure=1`), the UI can connect without exposing identity secret material in the shell.
+## Legacy Debug Mode
+Manual direct `/session` attachment remains available for lab work while the managed path is under active implementation.
 
 ## Status
 MVP/manual-test ready. Not production-ready.

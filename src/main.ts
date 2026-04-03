@@ -1,31 +1,61 @@
 import "./styles.css";
-import {
-  base64ToBytes,
-  createHandshake,
-  decryptEnvelope,
-  deriveSessionKey,
-  encryptCommand,
-  parseHelloAck,
-} from "./protocol";
-import type { CipherEnvelope, ClientCommand, ConnectionConfig } from "./types";
 
-type SessionState = {
-  ws: WebSocket;
-  sessionKey: Uint8Array;
-  sessionId: string;
+type IceServerHints = {
+  stun?: string[];
+  turn?: string[];
 };
 
-type SegmentAccumulator = {
-  name: string;
-  chunks: Uint8Array[];
+type LaunchDisplay = {
+  serviceLabel?: string;
+  serviceVersion?: string;
+  service?: string;
+  status?: string;
+  cameraCount?: number;
+  configuredSources?: number;
+  sources?: string[];
+  iceServers?: IceServerHints;
+};
+
+type LaunchContext = {
+  launchId: string;
+  app: string;
+  repo: string;
+  identityId: string;
+  devicePk: string;
+  gatewayPk: string;
+  servicePk: string;
+  service: string;
+  launchToken: string;
+  display?: LaunchDisplay;
+  createdAt: number;
+  expiresAt: number;
+};
+
+type PendingRequest<T> = {
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+  timer: number;
+};
+
+type GatewaySignalResult = {
+  requestId: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
 };
 
 type CameraTile = {
   id: string;
-  title: string;
-  subtitle: string;
-  status: "configured" | "discovered";
+  card: HTMLDivElement;
+  badge: HTMLSpanElement;
+  detail: HTMLParagraphElement;
+  video: HTMLVideoElement;
 };
+
+const APP_CHANNEL_NAME = "constitute.app.launch";
+const LAUNCH_STORAGE_PREFIX = "constitute.launch.";
+const LAUNCH_REQUEST_TIMEOUT_MS = 6_000;
+const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -33,735 +63,580 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <main class="layout">
-    <section class="panel">
-      <h1>Constitute NVR UI (MVP)</h1>
-      <p class="muted">Identity-bound test client for constitute-nvr websocket session channel.</p>
-
-      <label>Gateway/NVR WS URL</label>
-      <input id="url" value="ws://127.0.0.1:8456/session" />
-
-      <label>Identity ID</label>
-      <input id="identityId" placeholder="identity id" />
-
-      <label>Device PK</label>
-      <input id="devicePk" placeholder="device public key" />
-
-      <label>Identity Secret (hex)</label>
-      <input id="identitySecret" placeholder="64-byte hex" />
-
-      <div class="row">
-        <button id="connect">Connect</button>
-        <button id="disconnect" disabled>Disconnect</button>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Constitute Managed App</p>
+        <h1>Security Cameras</h1>
+        <p id="subtitle" class="subtitle">Waiting for managed launch context…</p>
       </div>
+      <div class="heroMeta">
+        <span id="connectionBadge" class="badge badge-neutral">idle</span>
+        <a id="backLink" class="backLink" href="/constitute/">Back to Shell</a>
+      </div>
+    </header>
 
-      <p id="status" class="status">Disconnected</p>
+    <section class="panel summaryPanel">
+      <div class="summaryItem">
+        <span class="summaryLabel">Gateway</span>
+        <span id="summaryGateway" class="summaryValue mono">—</span>
+      </div>
+      <div class="summaryItem">
+        <span class="summaryLabel">Service</span>
+        <span id="summaryService" class="summaryValue mono">—</span>
+      </div>
+      <div class="summaryItem">
+        <span class="summaryLabel">Cameras</span>
+        <span id="summaryCameras" class="summaryValue">0</span>
+      </div>
+      <div class="summaryItem">
+        <span class="summaryLabel">State</span>
+        <span id="summaryState" class="summaryValue">waiting</span>
+      </div>
     </section>
 
     <section class="panel">
-      <h2>Security Cameras</h2>
-      <p id="cameraSummary" class="muted">No Cameras</p>
+      <div class="panelHeader">
+        <div>
+          <h2>Live Grid</h2>
+          <p id="gridHint" class="panelHint">Launch context not loaded yet.</p>
+        </div>
+        <button id="btnReconnect" type="button" class="secondary">Reconnect</button>
+      </div>
       <div id="cameraGrid" class="cameraGrid">
-        <article class="cameraEmpty">No Cameras</article>
+        <article class="emptyState">
+          <strong>No Cameras</strong>
+          <p>Launch the app from Constitute after the NVR service is available.</p>
+        </article>
       </div>
-
-      <h3>Commands</h3>
-      <div class="row wrap">
-        <button id="listSources" disabled>list_sources</button>
-        <button id="listSourceStates" disabled>list_source_states</button>
-        <button id="discoverOnvif" disabled>discover_onvif</button>
-        <button id="discoverReolink" disabled>discover_reolink</button>
-      </div>
-
-      <label>Source ID</label>
-      <input id="sourceId" placeholder="cam-reolink-e1" />
-
-      <label>Probe / Setup IP</label>
-      <input id="cameraIp" placeholder="192.168.1.188" />
-
-      <div class="row wrap">
-        <button id="probeReolink" disabled>probe_reolink</button>
-        <button id="readReolinkState" disabled>read_reolink_state</button>
-        <button id="setupReolink" disabled>setup_reolink</button>
-      </div>
-
-      <label>Camera Username</label>
-      <input id="cameraUser" value="admin" />
-
-      <label>Camera Password</label>
-      <input id="cameraPass" type="password" placeholder="camera password" />
-
-      <label>Desired Password (optional)</label>
-      <input id="cameraDesiredPass" type="password" placeholder="new password" />
-
-      <label>Limit</label>
-      <input id="limit" value="30" />
-
-      <div class="row wrap">
-        <button id="listSegments" disabled>list_segments</button>
-      </div>
-
-      <label>Segment Name</label>
-      <input id="segmentName" placeholder="20260227T120100.cnv" />
-
-      <div class="row wrap">
-        <button id="getSegment" disabled>get_segment</button>
-      </div>
-
-      <h3>Preview</h3>
-      <video id="segmentPreview" controls muted playsinline></video>
-
-      <h3>Downloads</h3>
-      <ul id="downloads" class="downloads"></ul>
     </section>
 
-    <section class="panel logs">
-      <h2>Session Log</h2>
-      <pre id="log"></pre>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h2>Session Log</h2>
+          <p class="panelHint">Managed launch and WebRTC negotiation details.</p>
+        </div>
+      </div>
+      <pre id="log" class="log"></pre>
     </section>
   </main>
 `;
 
-const urlInput = byId<HTMLInputElement>("url");
-const identityIdInput = byId<HTMLInputElement>("identityId");
-const devicePkInput = byId<HTMLInputElement>("devicePk");
-const identitySecretInput = byId<HTMLInputElement>("identitySecret");
-const sourceIdInput = byId<HTMLInputElement>("sourceId");
-const cameraIpInput = byId<HTMLInputElement>("cameraIp");
-const cameraUserInput = byId<HTMLInputElement>("cameraUser");
-const cameraPassInput = byId<HTMLInputElement>("cameraPass");
-const cameraDesiredPassInput = byId<HTMLInputElement>("cameraDesiredPass");
-const limitInput = byId<HTMLInputElement>("limit");
-const segmentNameInput = byId<HTMLInputElement>("segmentName");
-const statusText = byId<HTMLParagraphElement>("status");
-const logEl = byId<HTMLPreElement>("log");
-const downloadsEl = byId<HTMLUListElement>("downloads");
-const cameraSummaryEl = byId<HTMLParagraphElement>("cameraSummary");
+const subtitleEl = byId<HTMLParagraphElement>("subtitle");
+const connectionBadgeEl = byId<HTMLSpanElement>("connectionBadge");
+const backLinkEl = byId<HTMLAnchorElement>("backLink");
+const summaryGatewayEl = byId<HTMLSpanElement>("summaryGateway");
+const summaryServiceEl = byId<HTMLSpanElement>("summaryService");
+const summaryCamerasEl = byId<HTMLSpanElement>("summaryCameras");
+const summaryStateEl = byId<HTMLSpanElement>("summaryState");
+const gridHintEl = byId<HTMLParagraphElement>("gridHint");
 const cameraGridEl = byId<HTMLDivElement>("cameraGrid");
-const segmentPreview = byId<HTMLVideoElement>("segmentPreview");
+const btnReconnect = byId<HTMLButtonElement>("btnReconnect");
+const logEl = byId<HTMLPreElement>("log");
 
-const connectBtn = byId<HTMLButtonElement>("connect");
-const disconnectBtn = byId<HTMLButtonElement>("disconnect");
-const listSourcesBtn = byId<HTMLButtonElement>("listSources");
-const listSourceStatesBtn = byId<HTMLButtonElement>("listSourceStates");
-const discoverOnvifBtn = byId<HTMLButtonElement>("discoverOnvif");
-const discoverReolinkBtn = byId<HTMLButtonElement>("discoverReolink");
-const probeReolinkBtn = byId<HTMLButtonElement>("probeReolink");
-const readReolinkStateBtn = byId<HTMLButtonElement>("readReolinkState");
-const setupReolinkBtn = byId<HTMLButtonElement>("setupReolink");
-const listSegmentsBtn = byId<HTMLButtonElement>("listSegments");
-const getSegmentBtn = byId<HTMLButtonElement>("getSegment");
-
-let session: SessionState | null = null;
-let pendingSegment: SegmentAccumulator | null = null;
-let lastSegmentObjectUrl: string | null = null;
+const pendingLaunchResponses = new Map<string, PendingRequest<LaunchContext | null>>();
+const pendingSignalResponses = new Map<string, PendingRequest<GatewaySignalResult>>();
 const cameraTiles = new Map<string, CameraTile>();
-const AUTO_DISCOVERY_INTERVAL_MS = 20_000;
-let autoDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
 
-connectBtn.addEventListener("click", async () => {
-  try {
-    await connect();
-  } catch (error) {
-    appendLog(`connect error: ${(error as Error).message}`);
-    setStatus("Connection failed", true);
-  }
+let channel: BroadcastChannel | null = null;
+let launchContext: LaunchContext | null = null;
+let peerConnection: RTCPeerConnection | null = null;
+let transceiverSourceIds: string[] = [];
+
+btnReconnect.addEventListener("click", () => {
+  void reconnect();
 });
 
-disconnectBtn.addEventListener("click", () => {
-  closeSession();
-});
-
-listSourcesBtn.addEventListener("click", async () => {
-  await sendCommand({ cmd: "list_sources" });
-});
-
-listSourceStatesBtn.addEventListener("click", async () => {
-  await sendCommand({ cmd: "list_source_states" });
-});
-
-discoverOnvifBtn.addEventListener("click", async () => {
-  await sendCommand({ cmd: "discover_onvif" });
-});
-
-discoverReolinkBtn.addEventListener("click", async () => {
-  await sendCommand({ cmd: "discover_reolink" });
-});
-
-probeReolinkBtn.addEventListener("click", async () => {
-  const ip = cameraIpInput.value.trim();
-  if (!ip) {
-    appendLog("probe_reolink requires camera IP");
-    return;
-  }
-  await sendCommand({ cmd: "probe_reolink", ip });
-});
-
-readReolinkStateBtn.addEventListener("click", async () => {
-  const req = buildReolinkConnectRequest();
-  if (!req) return;
-  await sendCommand({ cmd: "read_reolink_state", request: req });
-});
-
-setupReolinkBtn.addEventListener("click", async () => {
-  const ip = cameraIpInput.value.trim();
-  const username = cameraUserInput.value.trim() || "admin";
-  const password = cameraPassInput.value;
-  if (!ip || !password) {
-    appendLog("setup_reolink requires camera IP and current password");
-    return;
-  }
-  await sendCommand({
-    cmd: "setup_reolink",
-    request: {
-      ip,
-      username,
-      password,
-      desiredPassword: cameraDesiredPassInput.value,
-      generatePassword: false,
-    },
-  });
-});
-
-listSegmentsBtn.addEventListener("click", async () => {
-  await sendCommand({
-    cmd: "list_segments",
-    sourceId: sourceIdInput.value.trim(),
-    limit: Number.parseInt(limitInput.value.trim(), 10) || 30,
-  });
-});
-
-getSegmentBtn.addEventListener("click", async () => {
-  await sendCommand({
-    cmd: "get_segment",
-    sourceId: sourceIdInput.value.trim(),
-    name: segmentNameInput.value.trim(),
-  });
-});
-
-async function connect(): Promise<void> {
-  closeSession();
-  setStatus("Connecting...");
-
-  const config = readConfig();
-  const handshake = createHandshake(config);
-
-  const ws = new WebSocket(config.url);
-
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("websocket open timeout"));
-    }, 8_000);
-
-    ws.onopen = () => {
-      clearTimeout(timeout);
-      ws.send(JSON.stringify(handshake.hello));
-      appendLog(`hello sent for device ${config.devicePk}`);
-    };
-
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      reject(new Error("websocket failed to open"));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const ack = parseHelloAck(String(event.data));
-        const key = deriveSessionKey(
-          ack.serverKey,
-          ack.sessionId,
-          config,
-          handshake.privateKey,
-        );
-
-        session = {
-          ws,
-          sessionKey: key,
-          sessionId: ack.sessionId,
-        };
-
-        ws.onmessage = (innerEvent) => onCipherFrame(String(innerEvent.data));
-        ws.onclose = () => {
-          stopAutoDiscoveryLoop();
-          appendLog("session closed");
-          setStatus("Disconnected", true);
-          setCommandEnabled(false);
-        };
-
-        setStatus(`Connected: ${ack.sessionId}`);
-        setCommandEnabled(true);
-        disconnectBtn.disabled = false;
-        connectBtn.disabled = true;
-        appendLog("session handshake complete");
-        startAutoDiscoveryLoop();
-        resolve();
-      } catch (err) {
-        reject(new Error(`handshake failed: ${(err as Error).message}`));
-      }
-    };
-  });
+function byId<T extends HTMLElement>(id: string): T {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing element #${id}`);
+  return el as T;
 }
 
-function onCipherFrame(raw: string): void {
-  if (!session) {
-    return;
-  }
-
-  let parsed: CipherEnvelope;
-  try {
-    parsed = JSON.parse(raw) as CipherEnvelope;
-  } catch {
-    appendLog(`non-json frame: ${raw}`);
-    return;
-  }
-
-  if (parsed.type !== "cipher") {
-    appendLog(`plaintext frame: ${raw}`);
-    return;
-  }
-
-  try {
-    const body = decryptEnvelope(session.sessionKey, parsed) as Record<string, unknown>;
-    appendLog(JSON.stringify(body, null, 2));
-    handlePayload(body);
-  } catch (err) {
-    appendLog(`decrypt error: ${(err as Error).message}`);
-  }
-}
-
-function handlePayload(body: Record<string, unknown>): void {
-  const cmd = String(body.cmd ?? "");
-
-  if (cmd === "list_sources") {
-    applySources(body);
-    return;
-  }
-
-  if (cmd === "list_source_states") {
-    applySourceStates(body);
-    return;
-  }
-
-  if (cmd === "discover_onvif") {
-    applyOnvifDiscovery(body);
-    return;
-  }
-
-  if (cmd === "discover_reolink") {
-    applyReolinkDiscovery(body);
-    return;
-  }
-
-  if (cmd === "probe_reolink") {
-    appendLog(`probe result: ${JSON.stringify(body.result ?? {}, null, 2)}`);
-    return;
-  }
-
-  if (cmd === "read_reolink_state") {
-    appendLog(`read state: ${JSON.stringify(body.result ?? {}, null, 2)}`);
-    return;
-  }
-
-  if (cmd === "setup_reolink") {
-    appendLog(`setup result: ${JSON.stringify(body.result ?? {}, null, 2)}`);
-    applySetupReolinkResult(body);
-    void sendCommand({ cmd: "list_sources" });
-    void sendCommand({ cmd: "list_source_states" });
-    return;
-  }
-
-  if (cmd === "segment_start") {
-    pendingSegment = {
-      name: String(body.name ?? "segment.bin"),
-      chunks: [],
-    };
-    return;
-  }
-
-  if (cmd === "segment_chunk" && pendingSegment) {
-    const dataB64 = String(body.data ?? "");
-    pendingSegment.chunks.push(base64ToBytes(dataB64));
-    return;
-  }
-
-  if (cmd === "segment_end" && pendingSegment) {
-    const joined = concatBytes(pendingSegment.chunks);
-    const url = URL.createObjectURL(new Blob([joined], { type: "video/mp4" }));
-    addDownloadLink(pendingSegment.name, url, joined.length);
-    if (lastSegmentObjectUrl) {
-      URL.revokeObjectURL(lastSegmentObjectUrl);
-    }
-    lastSegmentObjectUrl = url;
-    segmentPreview.src = url;
-    pendingSegment = null;
-  }
-}
-
-function applySetupReolinkResult(body: Record<string, unknown>): void {
-  const source = body.source;
-  if (!source || typeof source !== "object") {
-    return;
-  }
-
-  const rec = source as Record<string, unknown>;
-  const sourceId = String(rec.sourceId ?? rec.source_id ?? "").trim();
-  if (!sourceId) {
-    return;
-  }
-
-  const host = String(rec.onvifHost ?? rec.onvif_host ?? "").trim();
-  const title = String(rec.name ?? sourceId).trim() || sourceId;
-  const subtitle = host ? `Configured source (${host})` : "Configured source";
-
-  cameraTiles.set(sourceId, {
-    id: sourceId,
-    title,
-    subtitle,
-    status: "configured",
-  });
-
-  sourceIdInput.value = sourceId;
-  cameraIpInput.value = host || cameraIpInput.value;
-  renderCameraTiles();
-}
-
-function applySources(body: Record<string, unknown>): void {
-  const raw = Array.isArray(body.sources) ? body.sources : [];
-  const sources = raw
-    .map((value) => String(value ?? "").trim())
-    .filter((value) => value.length > 0);
-
-  for (const sourceId of sources) {
-    cameraTiles.set(sourceId, {
-      id: sourceId,
-      title: sourceId,
-      subtitle: "Configured source",
-      status: "configured",
-    });
-  }
-
-  if (!sourceIdInput.value.trim() && sources.length > 0) {
-    sourceIdInput.value = sources[0];
-  }
-
-  renderCameraTiles();
-}
-
-function applySourceStates(body: Record<string, unknown>): void {
-  const raw = Array.isArray(body.states) ? body.states : [];
-  raw.forEach((entry) => {
-    if (!entry || typeof entry !== "object") return;
-    const rec = entry as Record<string, unknown>;
-    const id = String(rec.sourceId ?? "").trim();
-    if (!id) return;
-    const sourceState = String(rec.state ?? "unknown").trim() || "unknown";
-    const subtitle = `State: ${sourceState}`;
-    if (!cameraTiles.has(id)) {
-      cameraTiles.set(id, {
-        id,
-        title: id,
-        subtitle,
-        status: "configured",
-      });
-      return;
-    }
-    const existing = cameraTiles.get(id)!;
-    cameraTiles.set(id, {
-      ...existing,
-      subtitle,
-    });
-  });
-
-  renderCameraTiles();
-}
-
-function applyOnvifDiscovery(body: Record<string, unknown>): void {
-  const raw = Array.isArray(body.cameras) ? body.cameras : [];
-
-  raw.forEach((camera, index) => {
-    if (!camera || typeof camera !== "object") {
-      return;
-    }
-
-    const rec = camera as Record<string, unknown>;
-    const host = String(
-      rec.host ?? rec.ip ?? rec.address ?? rec.hostname ?? "",
-    ).trim();
-    const name = String(rec.name ?? rec.model ?? rec.manufacturer ?? "").trim();
-    const fallbackId = host || `camera-${index + 1}`;
-    const id = String(
-      rec.sourceId ?? rec.source_id ?? rec.id ?? rec.devicePk ?? fallbackId,
-    ).trim();
-
-    if (!id) {
-      return;
-    }
-
-    const title = name || id;
-    const subtitle = host ? `ONVIF ${host}` : "ONVIF discovered";
-
-    if (!cameraTiles.has(id)) {
-      cameraTiles.set(id, {
-        id,
-        title,
-        subtitle,
-        status: "discovered",
-      });
-      return;
-    }
-
-    const existing = cameraTiles.get(id)!;
-    cameraTiles.set(id, {
-      ...existing,
-      title: existing.title || title,
-      subtitle: existing.subtitle || subtitle,
-    });
-  });
-
-  renderCameraTiles();
-}
-
-
-function applyReolinkDiscovery(body: Record<string, unknown>): void {
-  const raw = Array.isArray(body.devices) ? body.devices : [];
-  raw.forEach((entry, index) => {
-    if (!entry || typeof entry !== "object") return;
-    const rec = entry as Record<string, unknown>;
-    const ip = String(rec.ip ?? "").trim();
-    const model = String(rec.model ?? "").trim();
-    const uid = String(rec.uid ?? "").trim();
-    const id = uid || ip || `reolink-${index + 1}`;
-    const title = model || id;
-    const subtitle = ip ? `Reolink ${ip}` : "Reolink discovered";
-    cameraTiles.set(id, {
-      id,
-      title,
-      subtitle,
-      status: "discovered",
-    });
-    if (ip && !cameraIpInput.value.trim()) cameraIpInput.value = ip;
-  });
-  renderCameraTiles();
-}
-
-function buildReolinkConnectRequest():
-  | { ip: string; username: string; channel: number; password: string }
-  | null {
-  const ip = cameraIpInput.value.trim();
-  const username = cameraUserInput.value.trim() || "admin";
-  const password = cameraPassInput.value;
-  if (!ip || !password) {
-    appendLog("read_reolink_state requires camera IP and password");
-    return null;
-  }
-  return {
-    ip,
-    username,
-    channel: 0,
-    password,
-  };
-}
-
-function renderCameraTiles(): void {
-  cameraGridEl.innerHTML = "";
-
-  if (cameraTiles.size === 0) {
-    cameraSummaryEl.textContent = "No Cameras";
-    const empty = document.createElement("article");
-    empty.className = "cameraEmpty";
-    empty.textContent = "No Cameras";
-    cameraGridEl.appendChild(empty);
-    return;
-  }
-
-  const tiles = Array.from(cameraTiles.values()).sort((a, b) =>
-    a.title.localeCompare(b.title),
-  );
-
-  cameraSummaryEl.textContent = `${tiles.length} camera${tiles.length === 1 ? "" : "s"}`;
-
-  for (const tile of tiles) {
-    const article = document.createElement("article");
-    article.className = "cameraTile";
-
-    const top = document.createElement("div");
-    top.className = "cameraTop";
-
-    const title = document.createElement("strong");
-    title.textContent = tile.title;
-
-    const badge = document.createElement("span");
-    badge.className = `cameraBadge ${tile.status}`;
-    badge.textContent = tile.status;
-
-    top.appendChild(title);
-    top.appendChild(badge);
-
-    const subtitle = document.createElement("div");
-    subtitle.className = "cameraSub";
-    subtitle.textContent = tile.subtitle;
-
-    article.appendChild(top);
-    article.appendChild(subtitle);
-    cameraGridEl.appendChild(article);
-  }
-}
-
-function stopAutoDiscoveryLoop(): void {
-  if (autoDiscoveryTimer !== null) {
-    clearInterval(autoDiscoveryTimer);
-    autoDiscoveryTimer = null;
-  }
-}
-
-async function runAutoDiscoverySweep(): Promise<void> {
-  if (!session) return;
-  await sendCommand({ cmd: "list_sources" });
-  await sendCommand({ cmd: "list_source_states" });
-  await sendCommand({ cmd: "discover_onvif" });
-  await sendCommand({ cmd: "discover_reolink" });
-}
-
-function startAutoDiscoveryLoop(): void {
-  stopAutoDiscoveryLoop();
-  appendLog('auto discovery enabled');
-  void runAutoDiscoverySweep();
-  autoDiscoveryTimer = setInterval(() => {
-    void runAutoDiscoverySweep();
-  }, AUTO_DISCOVERY_INTERVAL_MS);
-}
-
-async function sendCommand(command: ClientCommand): Promise<void> {
-  if (!session) {
-    appendLog("not connected");
-    return;
-  }
-
-  const frame = encryptCommand(session.sessionKey, command);
-  session.ws.send(JSON.stringify(frame));
-  appendLog(`sent ${command.cmd}`);
-}
-
-function readConfig(): ConnectionConfig {
-  const url = urlInput.value.trim();
-  const identityId = identityIdInput.value.trim();
-  const devicePk = devicePkInput.value.trim();
-  const identitySecretHex = identitySecretInput.value.trim();
-  const allowUnsignedHelloMvp = String(identitySecretInput.dataset.allowUnsignedMvp || "").trim() === "1";
-
-  if (!url || !identityId || !devicePk) {
-    throw new Error("url, identityId, and devicePk are required");
-  }
-
-  if (!identitySecretHex && !allowUnsignedHelloMvp) {
-    throw new Error("identitySecret is required unless unsigned MVP mode is enabled");
-  }
-
-  return {
-    url,
-    identityId,
-    devicePk,
-    identitySecretHex,
-    allowUnsignedHelloMvp,
-  };
-}
-
-function closeSession(): void {
-  stopAutoDiscoveryLoop();
-  if (session) {
-    session.ws.close();
-    session = null;
-  }
-  setCommandEnabled(false);
-  disconnectBtn.disabled = true;
-  connectBtn.disabled = false;
-  setStatus("Disconnected", true);
-}
-
-function setCommandEnabled(enabled: boolean): void {
-  listSourcesBtn.disabled = !enabled;
-  listSourceStatesBtn.disabled = !enabled;
-  discoverOnvifBtn.disabled = !enabled;
-  discoverReolinkBtn.disabled = !enabled;
-  probeReolinkBtn.disabled = !enabled;
-  readReolinkStateBtn.disabled = !enabled;
-  setupReolinkBtn.disabled = !enabled;
-  listSegmentsBtn.disabled = !enabled;
-  getSegmentBtn.disabled = !enabled;
-}
-
-function setStatus(message: string, warn = false): void {
-  statusText.textContent = message;
-  statusText.classList.toggle("warn", warn);
-}
-
-function appendLog(line: string): void {
-  const ts = new Date().toISOString();
-  logEl.textContent += `[${ts}] ${line}\n`;
+function appendLog(message: string): void {
+  const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+  logEl.textContent = logEl.textContent ? `${logEl.textContent}\n${line}` : line;
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function addDownloadLink(name: string, href: string, size: number): void {
-  const li = document.createElement("li");
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = name.replace(/\.cnv$/i, ".mp4");
-  a.textContent = `${a.download} (${(size / 1024).toFixed(1)} KiB)`;
-  li.appendChild(a);
-  downloadsEl.prepend(li);
+function setBadge(label: string, tone: "neutral" | "warn" | "good" | "bad"): void {
+  connectionBadgeEl.textContent = label;
+  connectionBadgeEl.className = `badge badge-${tone}`;
 }
 
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, p) => sum + p.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
+function setSummaryState(value: string): void {
+  summaryStateEl.textContent = value;
+}
+
+function pkLabel(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "—";
+  return raw.length > 16 ? `${raw.slice(0, 16)}…` : raw;
+}
+
+function randomOpaqueId(prefix: string): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const token = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${prefix}-${token}`;
+}
+
+function parseLaunchId(): string {
+  const raw = String(window.location.hash || "").replace(/^#/, "");
+  const params = new URLSearchParams(raw);
+  return String(params.get("launch") || raw || "").trim();
+}
+
+function shellBaseUrl(): string {
+  return new URL("/constitute/", window.location.origin).toString();
+}
+
+function launchStorageKey(launchId: string): string {
+  return `${LAUNCH_STORAGE_PREFIX}${launchId}`;
+}
+
+function readStoredLaunchContext(launchId: string): LaunchContext | null {
+  const key = launchStorageKey(launchId);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LaunchContext;
+    const expiresAt = Number(parsed?.expiresAt || 0);
+    if (expiresAt && expiresAt < Date.now()) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function ensureChannel(): BroadcastChannel {
+  if (channel) return channel;
+  if (typeof BroadcastChannel === "undefined") {
+    throw new Error("BroadcastChannel is not available in this browser");
+  }
+  channel = new BroadcastChannel(APP_CHANNEL_NAME);
+  channel.onmessage = (event) => handleChannelMessage(event.data);
+  return channel;
+}
+
+function handleChannelMessage(message: unknown): void {
+  if (!message || typeof message !== "object") return;
+  const payload = message as Record<string, unknown>;
+  const type = String(payload.type || "").trim();
+  if (type === "launch-context.response") {
+    const launchId = String(payload.launchId || "").trim();
+    const pending = pendingLaunchResponses.get(launchId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingLaunchResponses.delete(launchId);
+    const ok = payload.ok === true;
+    if (!ok) {
+      pending.resolve(null);
+      return;
+    }
+    pending.resolve((payload.context || null) as LaunchContext | null);
+    return;
+  }
+
+  if (type === "gateway.signal.response") {
+    const requestId = String(payload.requestId || "").trim();
+    const pending = pendingSignalResponses.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingSignalResponses.delete(requestId);
+    const ok = payload.ok === true;
+    if (!ok) {
+      pending.reject(new Error(String(payload.error || "gateway signaling failed")));
+      return;
+    }
+    pending.resolve({
+      requestId,
+      ok: true,
+      result: payload.result,
+    });
+  }
+}
+
+async function requestLaunchContextFromShell(launchId: string): Promise<LaunchContext | null> {
+  const bc = ensureChannel();
+  const promise = new Promise<LaunchContext | null>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingLaunchResponses.delete(launchId);
+      reject(new Error("launch context request timed out"));
+    }, LAUNCH_REQUEST_TIMEOUT_MS);
+    pendingLaunchResponses.set(launchId, { resolve, reject, timer });
+  });
+  bc.postMessage({ type: "launch-context.request", launchId });
+  return await promise;
+}
+
+async function requestGatewaySignal(signalType: string, payload: unknown): Promise<GatewaySignalResult> {
+  if (!launchContext) throw new Error("launch context is not loaded");
+  const bc = ensureChannel();
+  const requestId = randomOpaqueId("nvr-signal");
+  const promise = new Promise<GatewaySignalResult>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingSignalResponses.delete(requestId);
+      reject(new Error(`${signalType} signaling timed out`));
+    }, SIGNAL_REQUEST_TIMEOUT_MS);
+    pendingSignalResponses.set(requestId, { resolve, reject, timer });
+  });
+  bc.postMessage({
+    type: "gateway.signal.request",
+    launchId: launchContext.launchId,
+    requestId,
+    signalType,
+    payload,
+  });
+  return await promise;
+}
+
+function normalizeSourceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value) {
+    const next = String(entry || "").trim();
+    if (next && !out.includes(next)) out.push(next);
   }
   return out;
 }
 
-function applyLaunchParams(): void {
-  const params = new URLSearchParams(window.location.search);
-  const ws = String(params.get("ws") || "").trim();
-  const identityId = String(params.get("identityId") || "").trim();
-  const devicePk = String(params.get("devicePk") || "").trim();
-  const identitySecret = String(params.get("identitySecret") || "").trim();
-  const autoConnect = String(params.get("autoconnect") || "").trim() === "1";
-  const insecure = String(params.get("insecure") || "").trim() === "1";
+function buildRtcIceServers(hints: IceServerHints | undefined): RTCIceServer[] {
+  const servers: RTCIceServer[] = [];
+  const stun = normalizeSourceIds(hints?.stun || []);
+  if (stun.length > 0) servers.push({ urls: stun });
+  const turn = normalizeSourceIds(hints?.turn || []);
+  if (turn.length > 0) servers.push({ urls: turn });
+  return servers;
+}
 
-  if (ws) urlInput.value = ws;
-  if (identityId && !identityIdInput.value.trim()) identityIdInput.value = identityId;
-  if (devicePk && !devicePkInput.value.trim()) devicePkInput.value = devicePk;
-  if (identitySecret && !identitySecretInput.value.trim()) identitySecretInput.value = identitySecret;
-  if (insecure) {
-    identitySecretInput.dataset.allowUnsignedMvp = "1";
-    if (!identitySecretInput.value.trim()) {
-      identitySecretInput.placeholder = "optional in unsigned MVP mode";
+function setGridEmpty(title: string, body: string): void {
+  cameraTiles.clear();
+  cameraGridEl.innerHTML = `
+    <article class="emptyState">
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(body)}</p>
+    </article>
+  `;
+}
+
+function ensureCameraTile(sourceId: string): CameraTile {
+  const existing = cameraTiles.get(sourceId);
+  if (existing) return existing;
+
+  if (cameraTiles.size === 0) {
+    cameraGridEl.innerHTML = "";
+  }
+
+  const card = document.createElement("article");
+  card.className = "cameraTile";
+
+  const header = document.createElement("div");
+  header.className = "cameraHeader";
+
+  const title = document.createElement("div");
+  title.className = "cameraTitle";
+  title.textContent = sourceId;
+
+  const badge = document.createElement("span");
+  badge.className = "cameraBadge cameraBadge-neutral";
+  badge.textContent = "waiting";
+
+  header.appendChild(title);
+  header.appendChild(badge);
+
+  const video = document.createElement("video");
+  video.className = "cameraVideo";
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+  video.controls = false;
+
+  const detail = document.createElement("p");
+  detail.className = "cameraDetail";
+  detail.textContent = "Waiting for media.";
+
+  card.appendChild(header);
+  card.appendChild(video);
+  card.appendChild(detail);
+  cameraGridEl.appendChild(card);
+
+  const tile = { id: sourceId, card, badge, detail, video };
+  cameraTiles.set(sourceId, tile);
+  return tile;
+}
+
+function setTileState(sourceId: string, state: "waiting" | "connecting" | "live" | "unavailable", detail: string): void {
+  const tile = ensureCameraTile(sourceId);
+  tile.badge.textContent = state;
+  tile.badge.className = `cameraBadge cameraBadge-${state}`;
+  tile.detail.textContent = detail;
+}
+
+function attachTrackToTile(sourceId: string, stream: MediaStream): void {
+  const tile = ensureCameraTile(sourceId);
+  tile.video.srcObject = stream;
+  void tile.video.play().catch(() => {});
+  setTileState(sourceId, "live", "Receiving live preview.");
+}
+
+function markAllTiles(state: "waiting" | "connecting" | "unavailable", detail: string): void {
+  for (const sourceId of cameraTiles.keys()) {
+    setTileState(sourceId, state, detail);
+  }
+}
+
+function escapeHtml(value: string): string {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 8_000): Promise<void> {
+  if (pc.iceGatheringState === "complete") return;
+  await new Promise<void>((resolve) => {
+    const timeout = window.setTimeout(() => {
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      resolve();
+    }, timeoutMs);
+    const onChange = () => {
+      if (pc.iceGatheringState !== "complete") return;
+      window.clearTimeout(timeout);
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      resolve();
+    };
+    pc.addEventListener("icegatheringstatechange", onChange);
+  });
+}
+
+function localDescriptionPayload(pc: RTCPeerConnection): { type: string; sdp: string } {
+  const desc = pc.localDescription;
+  if (!desc?.type || !desc.sdp) throw new Error("local WebRTC offer is missing");
+  return {
+    type: desc.type,
+    sdp: desc.sdp,
+  };
+}
+
+function extractAnswerDescription(result: GatewaySignalResult): RTCSessionDescriptionInit {
+  const root = (result.result || {}) as Record<string, unknown>;
+  const payload = (root.payload || root.result || root) as Record<string, unknown>;
+
+  const direct = payload && typeof payload === "object"
+    ? payload
+    : {};
+
+  const candidate =
+    (direct.answer as Record<string, unknown> | undefined) ||
+    (direct.payload as Record<string, unknown> | undefined) ||
+    (direct.description as Record<string, unknown> | undefined) ||
+    direct;
+
+  const type = String(candidate?.type || "").trim();
+  const sdp = String(candidate?.sdp || "").trim();
+  if (!type || !sdp) {
+    throw new Error("gateway answer payload is missing type/sdp");
+  }
+  return { type: type as RTCSdpType, sdp };
+}
+
+function extractGrantedSources(result: GatewaySignalResult, fallback: string[]): string[] {
+  const root = (result.result || {}) as Record<string, unknown>;
+  const payload = (root.payload || root.result || root) as Record<string, unknown>;
+  const sources = normalizeSourceIds(payload?.sources);
+  return sources.length > 0 ? sources : fallback;
+}
+
+function refreshSummary(context: LaunchContext): void {
+  const display = context.display || {};
+  subtitleEl.textContent = display.serviceLabel
+    ? `Gateway-managed live preview for ${display.serviceLabel}.`
+    : "Gateway-managed live preview for your Security Cameras service.";
+  summaryGatewayEl.textContent = pkLabel(context.gatewayPk);
+  summaryServiceEl.textContent = pkLabel(context.servicePk);
+  summaryCamerasEl.textContent = String(display.cameraCount || display.configuredSources || normalizeSourceIds(display.sources).length || 0);
+  backLinkEl.href = shellBaseUrl();
+}
+
+async function loadLaunchContext(): Promise<LaunchContext> {
+  const launchId = parseLaunchId();
+  if (!launchId) throw new Error("launch id is missing from the URL");
+
+  const stored = readStoredLaunchContext(launchId);
+  if (stored) return stored;
+
+  appendLog(`launch context ${launchId} not found locally; asking shell`);
+  const fromShell = await requestLaunchContextFromShell(launchId);
+  if (fromShell) return fromShell;
+  throw new Error("launch context is unavailable; reopen this app from Constitute");
+}
+
+function sourceIdForTrack(event: RTCTrackEvent): string {
+  const pc = peerConnection;
+  if (!pc) return "";
+  const index = pc.getTransceivers().indexOf(event.transceiver);
+  if (index >= 0 && index < transceiverSourceIds.length) {
+    return transceiverSourceIds[index];
+  }
+  return transceiverSourceIds[0] || "";
+}
+
+async function connectLiveGrid(context: LaunchContext): Promise<void> {
+  const display = context.display || {};
+  const requestedSources = normalizeSourceIds(display.sources);
+  if (requestedSources.length === 0) {
+    setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
+    setBadge("no cameras", "warn");
+    setSummaryState("no cameras");
+    gridHintEl.textContent = "No enabled camera sources were advertised by the NVR service.";
+    return;
+  }
+
+  cameraGridEl.innerHTML = "";
+  cameraTiles.clear();
+  for (const sourceId of requestedSources) {
+    ensureCameraTile(sourceId);
+    setTileState(sourceId, "connecting", "Preparing WebRTC preview…");
+  }
+
+  gridHintEl.textContent = "Negotiating live preview through the owned gateway.";
+  setBadge("negotiating", "warn");
+  setSummaryState("negotiating");
+
+  const rtcConfig: RTCConfiguration = {
+    iceServers: buildRtcIceServers(display.iceServers),
+    bundlePolicy: "max-bundle",
+  };
+
+  peerConnection?.close();
+  peerConnection = new RTCPeerConnection(rtcConfig);
+  transceiverSourceIds = [...requestedSources];
+
+  for (const sourceId of requestedSources) {
+    peerConnection.addTransceiver("video", { direction: "recvonly" });
+    setTileState(sourceId, "connecting", "Waiting for answer from the gateway.");
+  }
+
+  peerConnection.addEventListener("track", (event) => {
+    const sourceId = sourceIdForTrack(event);
+    const stream = event.streams[0] || new MediaStream([event.track]);
+    attachTrackToTile(sourceId || event.track.id, stream);
+    setBadge("live", "good");
+    setSummaryState("live");
+    gridHintEl.textContent = "Receiving live H.264 preview.";
+  });
+
+  peerConnection.addEventListener("connectionstatechange", () => {
+    const state = peerConnection?.connectionState || "unknown";
+    appendLog(`peer connection state -> ${state}`);
+    if (state === "failed" || state === "disconnected") {
+      setBadge(state, "bad");
+      setSummaryState(state);
+      markAllTiles("unavailable", "Peer connection dropped.");
+    }
+  });
+
+  peerConnection.addEventListener("iceconnectionstatechange", () => {
+    const state = peerConnection?.iceConnectionState || "unknown";
+    appendLog(`ice connection state -> ${state}`);
+    if (state === "checking") {
+      setBadge("checking", "warn");
+      setSummaryState("checking");
+    } else if (state === "connected" || state === "completed") {
+      setBadge("connected", "good");
+      setSummaryState("connected");
+    } else if (state === "failed") {
+      setBadge("failed", "bad");
+      setSummaryState("failed");
+      markAllTiles("unavailable", "ICE connectivity failed.");
+    }
+  });
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  await waitForIceGatheringComplete(peerConnection);
+
+  appendLog(`sending offer for ${requestedSources.length} source(s)`);
+  const result = await requestGatewaySignal("offer", {
+    description: localDescriptionPayload(peerConnection),
+    sourceIds: requestedSources,
+  });
+
+  const grantedSources = extractGrantedSources(result, requestedSources);
+  for (const sourceId of requestedSources) {
+    if (!grantedSources.includes(sourceId)) {
+      setTileState(sourceId, "unavailable", "Source was not granted by the NVR service.");
     }
   }
 
-  if (autoConnect) {
-    setTimeout(() => {
-      if (!session) {
-        void connect().catch((error) => {
-          appendLog(`autoconnect failed: ${(error as Error).message}`);
-        });
-      }
-    }, 200);
+  const answer = extractAnswerDescription(result);
+  await peerConnection.setRemoteDescription(answer);
+  appendLog("remote answer applied");
+  setBadge("connecting", "warn");
+  setSummaryState("connecting");
+}
+
+async function reconnect(): Promise<void> {
+  if (!launchContext) {
+    launchContext = await loadLaunchContext();
+  }
+  refreshSummary(launchContext);
+  await connectLiveGrid(launchContext);
+}
+
+function closePeerConnection(): void {
+  if (peerConnection) {
+    try {
+      peerConnection.close();
+    } catch {}
+    peerConnection = null;
   }
 }
 
-applyLaunchParams();
-
-function byId<T extends HTMLElement>(id: string): T {
-  const element = document.getElementById(id) as T | null;
-  if (!element) {
-    throw new Error(`missing element: ${id}`);
-  }
-  return element;
+function fireAndForgetSessionClose(): void {
+  if (!launchContext || !channel) return;
+  try {
+    channel.postMessage({
+      type: "gateway.signal.request",
+      launchId: launchContext.launchId,
+      requestId: randomOpaqueId("nvr-close"),
+      signalType: "session_close",
+      payload: { reason: "page_unload" },
+    });
+  } catch {}
 }
 
+window.addEventListener("beforeunload", () => {
+  fireAndForgetSessionClose();
+  closePeerConnection();
+});
 
+async function bootstrap(): Promise<void> {
+  setBadge("loading", "neutral");
+  setSummaryState("loading");
+  appendLog("bootstrapping managed NVR app surface");
 
+  launchContext = await loadLaunchContext();
+  appendLog(`launch context loaded for service ${pkLabel(launchContext.servicePk)}`);
+  refreshSummary(launchContext);
+  await reconnect();
+}
+
+void bootstrap().catch((error) => {
+  console.error(error);
+  closePeerConnection();
+  setBadge("error", "bad");
+  setSummaryState("error");
+  const message = String((error as Error)?.message || error || "Unknown error");
+  subtitleEl.textContent = "Managed launch failed.";
+  gridHintEl.textContent = message;
+  setGridEmpty("Launch Failed", message);
+  appendLog(`fatal: ${message}`);
+});
