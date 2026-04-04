@@ -8,12 +8,13 @@ It is not a transport/gateway replacement and does not host identity authority.
 
 ## Boundaries
 - Identity authority and wallet: `constitute` shell
+- Same-origin launch/runtime coordination: `constitute/runtime.worker.js`
 - Browser control/signaling boundary: `constitute-gateway`
 - Hosted media/service endpoint: `constitute-nvr`
 
 ## Managed Launch Flow
 1. `constitute` opens `tld/constitute-nvr-ui/` with a non-secret `launchId`.
-2. Shell exposes short-lived launch context through same-origin ephemeral bootstrap (`BroadcastChannel` / storage).
+2. Shared runtime exposes short-lived launch context through same-origin worker state, with local storage / legacy app-channel fallback where needed.
 3. NVR UI redeems launch context and learns target gateway/service metadata.
 4. UI requests or receives gateway-mediated launch authorization.
 5. UI uses gateway-mediated signaling to establish WebRTC with the hosted NVR service.

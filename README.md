@@ -4,7 +4,7 @@
 
 Current scope is managed-app MVP support:
 - load as a Pages-hosted app surface at `tld/constitute-nvr-ui/`
-- redeem short-lived launch context from `constitute`
+- redeem short-lived launch context from shared runtime / `constitute`
 - establish gateway-mediated signaling/auth for `constitute-nvr`
 - render a simple live camera grid over WebRTC H.264 preview tracks
 
@@ -26,11 +26,12 @@ npm run test:e2e
 - App manifest: `app.manifest.json`
 - Default manifest entry: `dist/index.html`
 - Build output is committed for static hosting under the site domain.
+- Local static monorepo hosting should serve the built surface at `/constitute-nvr-ui/dist/`.
 
 ## Managed Launch Bootstrap
 Canonical launch direction:
 - shell opens this app with a short-lived `launchId`
-- shell exposes matching launch context through same-origin ephemeral bootstrap
+- shared runtime exposes matching launch context, with local storage / legacy app-channel fallback where needed
 - app redeems that context and then negotiates signaling/auth through the owned gateway
 
 Long-lived identity secrets should not be passed in query parameters.

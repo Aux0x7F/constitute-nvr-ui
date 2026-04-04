@@ -262,9 +262,69 @@ test("boots from stored launch context and renders a live camera grid", async ({
   await expect(page.locator("#gridHint")).toContainText("Receiving live H.264 preview");
 });
 
+test("hides the close affordance when no shell opener is available", async ({ page }) => {
+  await page.goto("/#launch=launch-test-001");
+
+  await expect(page.getByRole("button", { name: "Close" })).toHaveCount(0);
+});
+
+test("focuses the shell opener and closes when launched from the shell", async ({ page }) => {
+  await page.addInitScript(() => {
+    let focused = false;
+    let closeRequested = false;
+    const opener = {
+      closed: false,
+      focus() {
+        focused = true;
+      },
+    };
+
+    Object.defineProperty(window, "opener", {
+      configurable: true,
+      get: () => opener,
+    });
+
+    Object.defineProperty(window, "close", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        closeRequested = true;
+      },
+    });
+
+    Object.defineProperty(window, "__closeProbe", {
+      configurable: true,
+      value: {
+        get focused() {
+          return focused;
+        },
+        get closeRequested() {
+          return closeRequested;
+        },
+      },
+    });
+  });
+
+  await page.goto("/#launch=launch-test-001");
+
+  const closeButton = page.getByRole("button", { name: "Close" });
+  await expect(closeButton).toBeVisible();
+  await closeButton.click();
+
+  await expect.poll(async () => {
+    return await page.evaluate(() => {
+      const probe = (window as Window & {
+        __closeProbe?: { focused: boolean; closeRequested: boolean };
+      }).__closeProbe;
+      return probe ? `${probe.focused}:${probe.closeRequested}` : "false:false";
+    });
+  }).toBe("true:true");
+});
+
 test("requests launch context from the shell when local storage is empty", async ({ page }) => {
   await page.addInitScript(({ launchId, context }) => {
     window.localStorage.removeItem(`constitute.launch.${launchId}`);
+    window.localStorage.setItem("constitute.nvr.diagnostics", "1");
 
     const OriginalBroadcastChannel = window.BroadcastChannel as unknown as {
       new (name: string): BroadcastChannel;

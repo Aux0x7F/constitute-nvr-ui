@@ -120,12 +120,14 @@ textarea {
 
 .backLink,
 .backLink:visited {
+  font: inherit;
   color: var(--text);
   text-decoration: none;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 0.45rem 0.85rem;
   background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
 }
 
 .backLink:hover {
@@ -143,6 +145,10 @@ textarea {
 .panel + .panel,
 .summaryPanel {
   margin-top: 1rem;
+}
+
+.diagnostics-hidden {
+  display: none !important;
 }
 
 .panelHeader {

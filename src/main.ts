@@ -31,6 +31,13 @@ type LaunchContext = {
   expiresAt: number;
 };
 
+type LaunchStage =
+  | "surface_load"
+  | "launch_context"
+  | "launch_authorization"
+  | "gateway_signal"
+  | "webrtc_media";
+
 type PendingRequest<T> = {
   resolve: (value: T) => void;
   reject: (reason?: unknown) => void;
@@ -54,8 +61,10 @@ type CameraTile = {
 
 const APP_CHANNEL_NAME = "constitute.app.launch";
 const LAUNCH_STORAGE_PREFIX = "constitute.launch.";
+const DIAGNOSTICS_STORAGE_KEY = "constitute.nvr.diagnostics";
 const LAUNCH_REQUEST_TIMEOUT_MS = 6_000;
 const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
+const RUNTIME_WORKER_BUILD_ID = "2026-04-03-runtime-v1";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -72,11 +81,11 @@ app.innerHTML = `
       </div>
       <div class="heroMeta">
         <span id="connectionBadge" class="badge badge-neutral">idle</span>
-        <a id="backLink" class="backLink" href="/constitute/">Back to Shell</a>
+        <button id="closeAppButton" type="button" class="backLink" hidden>Close</button>
       </div>
     </header>
 
-    <section class="panel summaryPanel">
+    <section id="summaryPanel" class="panel summaryPanel">
       <div class="summaryItem">
         <span class="summaryLabel">Gateway</span>
         <span id="summaryGateway" class="summaryValue mono">—</span>
@@ -111,7 +120,7 @@ app.innerHTML = `
       </div>
     </section>
 
-    <section class="panel">
+    <section id="logPanel" class="panel">
       <div class="panelHeader">
         <div>
           <h2>Session Log</h2>
@@ -125,7 +134,11 @@ app.innerHTML = `
 
 const subtitleEl = byId<HTMLParagraphElement>("subtitle");
 const connectionBadgeEl = byId<HTMLSpanElement>("connectionBadge");
-const backLinkEl = byId<HTMLAnchorElement>("backLink");
+const closeAppButtonEl = byId<HTMLButtonElement>("closeAppButton");
+const bootSplashEl = document.getElementById("bootSplash");
+const bootSplashTitleEl = document.getElementById("bootSplashTitle");
+const bootSplashStatusEl = document.getElementById("bootSplashStatus");
+const summaryPanelEl = byId<HTMLElement>("summaryPanel");
 const summaryGatewayEl = byId<HTMLSpanElement>("summaryGateway");
 const summaryServiceEl = byId<HTMLSpanElement>("summaryService");
 const summaryCamerasEl = byId<HTMLSpanElement>("summaryCameras");
@@ -133,6 +146,7 @@ const summaryStateEl = byId<HTMLSpanElement>("summaryState");
 const gridHintEl = byId<HTMLParagraphElement>("gridHint");
 const cameraGridEl = byId<HTMLDivElement>("cameraGrid");
 const btnReconnect = byId<HTMLButtonElement>("btnReconnect");
+const logPanelEl = byId<HTMLElement>("logPanel");
 const logEl = byId<HTMLPreElement>("log");
 
 const pendingLaunchResponses = new Map<string, PendingRequest<LaunchContext | null>>();
@@ -140,12 +154,24 @@ const pendingSignalResponses = new Map<string, PendingRequest<GatewaySignalResul
 const cameraTiles = new Map<string, CameraTile>();
 
 let channel: BroadcastChannel | null = null;
+let runtimePort: MessagePort | null = null;
+let runtimeRequestSeq = 1;
+const pendingRuntimeResponses = new Map<string, PendingRequest<unknown>>();
+let runtimeReadyPromise: Promise<MessagePort | null> | null = null;
+let resolveRuntimeReady: ((value: MessagePort | null) => void) | null = null;
 let launchContext: LaunchContext | null = null;
 let peerConnection: RTCPeerConnection | null = null;
 let transceiverSourceIds: string[] = [];
+const logLines: string[] = [];
+let diagnosticsEnabled = false;
+let bootSplashDismissed = false;
 
 btnReconnect.addEventListener("click", () => {
   void reconnect();
+});
+
+closeAppButtonEl.addEventListener("click", () => {
+  void focusShellAndClose();
 });
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -154,10 +180,34 @@ function byId<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+class ManagedLaunchError extends Error {
+  stage: LaunchStage;
+  detail: string;
+
+  constructor(stage: LaunchStage, detail: string) {
+    super(`${stage}: ${detail}`);
+    this.name = "ManagedLaunchError";
+    this.stage = stage;
+    this.detail = detail;
+  }
+}
+
+function launchError(stage: LaunchStage, detail: string): ManagedLaunchError {
+  return new ManagedLaunchError(stage, String(detail || "Unknown error").trim() || "Unknown error");
+}
+
+function asManagedLaunchError(error: unknown, fallbackStage: LaunchStage): ManagedLaunchError {
+  if (error instanceof ManagedLaunchError) return error;
+  return launchError(fallbackStage, String((error as Error)?.message || error || "Unknown error"));
+}
+
 function appendLog(message: string): void {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`;
-  logEl.textContent = logEl.textContent ? `${logEl.textContent}\n${line}` : line;
-  logEl.scrollTop = logEl.scrollHeight;
+  logLines.push(line);
+  if (diagnosticsEnabled) {
+    renderLogBuffer();
+    console.info(`[nvr-ui] ${message}`);
+  }
 }
 
 function setBadge(label: string, tone: "neutral" | "warn" | "good" | "bad"): void {
@@ -182,14 +232,140 @@ function randomOpaqueId(prefix: string): string {
   return `${prefix}-${token}`;
 }
 
+function hashParams(): URLSearchParams {
+  return new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
+}
+
 function parseLaunchId(): string {
   const raw = String(window.location.hash || "").replace(/^#/, "");
-  const params = new URLSearchParams(raw);
+  const params = hashParams();
   return String(params.get("launch") || raw || "").trim();
+}
+
+function readDiagnosticsPreference(): boolean {
+  const params = hashParams();
+  const requested = String(
+    params.get("diagnostics") ||
+    params.get("diag") ||
+    params.get("debug") ||
+    "",
+  ).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(requested)) return true;
+  try {
+    return window.localStorage.getItem(DIAGNOSTICS_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistDiagnosticsPreference(enabled: boolean): void {
+  try {
+    if (enabled) {
+      window.localStorage.setItem(DIAGNOSTICS_STORAGE_KEY, "1");
+    } else {
+      window.localStorage.removeItem(DIAGNOSTICS_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function renderLogBuffer(): void {
+  logEl.textContent = logLines.join("\n");
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function applyDiagnosticsMode(): void {
+  diagnosticsEnabled = readDiagnosticsPreference();
+  summaryPanelEl.classList.toggle("diagnostics-hidden", !diagnosticsEnabled);
+  logPanelEl.classList.toggle("diagnostics-hidden", !diagnosticsEnabled);
+  if (diagnosticsEnabled) {
+    renderLogBuffer();
+  }
+}
+
+function installDiagnosticsBridge(): void {
+  const api = {
+    get enabled(): boolean {
+      return diagnosticsEnabled;
+    },
+    enable(): boolean {
+      persistDiagnosticsPreference(true);
+      applyDiagnosticsMode();
+      console.info("[nvr-ui] diagnostics enabled");
+      return diagnosticsEnabled;
+    },
+    disable(): boolean {
+      persistDiagnosticsPreference(false);
+      applyDiagnosticsMode();
+      console.info("[nvr-ui] diagnostics disabled");
+      return diagnosticsEnabled;
+    },
+  };
+  Object.defineProperty(window, "ConstituteNvrUiDiagnostics", {
+    value: api,
+    configurable: true,
+    enumerable: false,
+    writable: false,
+  });
 }
 
 function shellBaseUrl(): string {
   return new URL("/constitute/", window.location.origin).toString();
+}
+
+function setBootSplash(title: string, status: string): void {
+  if (!bootSplashEl || bootSplashDismissed) return;
+  if (bootSplashTitleEl) bootSplashTitleEl.textContent = title;
+  if (bootSplashStatusEl) bootSplashStatusEl.textContent = status;
+  document.body.classList.add("booting");
+}
+
+function dismissBootSplash(): void {
+  if (!bootSplashEl || bootSplashDismissed) return;
+  bootSplashDismissed = true;
+  document.body.classList.remove("booting");
+  window.setTimeout(() => {
+    try {
+      bootSplashEl.remove();
+    } catch {}
+  }, 220);
+}
+
+function hasShellOpener(): boolean {
+  try {
+    return Boolean(window.opener && !window.opener.closed);
+  } catch {
+    return false;
+  }
+}
+
+function updateCloseAppButton(): void {
+  closeAppButtonEl.hidden = !hasShellOpener();
+}
+
+async function focusShellAndClose(): Promise<void> {
+  let openerFocused = false;
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.focus();
+      openerFocused = true;
+    }
+  } catch {}
+
+  try {
+    window.close();
+  } catch {}
+
+  window.setTimeout(() => {
+    if (window.closed) return;
+    if (openerFocused) return;
+    closeAppButtonEl.hidden = true;
+  }, 150);
+}
+
+function runtimeWorkerUrl(): string {
+  const target = new URL("/constitute/runtime.worker.js", window.location.origin);
+  target.searchParams.set("v", RUNTIME_WORKER_BUILD_ID);
+  return target.toString();
 }
 
 function launchStorageKey(launchId: string): string {
@@ -211,6 +387,110 @@ function readStoredLaunchContext(launchId: string): LaunchContext | null {
   } catch {
     return null;
   }
+}
+
+function handleRuntimeMessage(message: unknown): void {
+  if (!message || typeof message !== "object") return;
+  const payload = message as Record<string, unknown>;
+  const type = String(payload.type || "").trim();
+  if (type === "runtime.attached" || type === "status.snapshot") {
+    if (type === "runtime.attached" && resolveRuntimeReady) {
+      resolveRuntimeReady(runtimePort);
+      resolveRuntimeReady = null;
+    }
+    appendLog(`runtime ${type === "runtime.attached" ? "attached" : "snapshot"} ${String(payload.buildId || "")}`.trim());
+    return;
+  }
+  if (type === "runtime.ack") {
+    appendLog(`runtime ack ${String(payload.kind || "").trim()} ${payload.ok === false ? String(payload.error || "failed") : "ok"}`.trim());
+    return;
+  }
+  if (type !== "runtime.response") return;
+  const requestId = String(payload.requestId || "").trim();
+  const pending = pendingRuntimeResponses.get(requestId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingRuntimeResponses.delete(requestId);
+  if (payload.ok === false) {
+    pending.reject(new Error(String(payload.error || "runtime request failed")));
+    return;
+  }
+  pending.resolve(payload.result);
+}
+
+async function ensureRuntimePort(): Promise<MessagePort | null> {
+  if (runtimeReadyPromise) return await runtimeReadyPromise;
+  if (typeof SharedWorker === "undefined") return null;
+  runtimeReadyPromise = new Promise<MessagePort | null>((resolve) => {
+    const timeout = window.setTimeout(() => {
+      if (resolveRuntimeReady) {
+        resolveRuntimeReady(null);
+        resolveRuntimeReady = null;
+      }
+      runtimeReadyPromise = null;
+      runtimePort = null;
+      appendLog("runtime attach unavailable; falling back to local launch bootstrap");
+    }, 1_200);
+    resolveRuntimeReady = (value) => {
+      window.clearTimeout(timeout);
+      resolve(value);
+    };
+    try {
+      const worker = new SharedWorker(runtimeWorkerUrl());
+      runtimePort = worker.port;
+      runtimePort.start();
+      runtimePort.onmessage = (event) => handleRuntimeMessage(event.data);
+      runtimePort.postMessage({
+        type: "runtime.attach",
+        clientId: randomOpaqueId("runtime-nvr"),
+        surface: "constitute-nvr-ui",
+        broker: false,
+      });
+    } catch (error) {
+      window.clearTimeout(timeout);
+      appendLog(`runtime attach unavailable; falling back (${String((error as Error)?.message || error)})`);
+      runtimePort = null;
+      runtimeReadyPromise = null;
+      resolveRuntimeReady = null;
+      resolve(null);
+    }
+  });
+  return await runtimeReadyPromise;
+}
+
+async function runtimeCall<T = unknown>(type: string, payload: Record<string, unknown>, timeoutMs: number): Promise<T | null> {
+  const port = await ensureRuntimePort();
+  if (!port) return null;
+  const requestId = randomOpaqueId("runtime");
+  const promise = new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingRuntimeResponses.delete(requestId);
+      reject(new Error(`${type} timed out`));
+    }, timeoutMs);
+    pendingRuntimeResponses.set(requestId, { resolve, reject, timer });
+  });
+  port.postMessage({
+    type,
+    requestId,
+    ...payload,
+  });
+  return await promise;
+}
+
+async function reportServiceStatus(state: string, reason: string, stage: LaunchStage | "" = ""): Promise<void> {
+  try {
+    await runtimeCall("status.update", {
+      role: "service",
+      service: "nvr",
+      status: {
+        service: "nvr",
+        state,
+        reason,
+        stage,
+        updatedAt: Date.now(),
+      },
+    }, 5_000);
+  } catch {}
 }
 
 function ensureChannel(): BroadcastChannel {
@@ -246,6 +526,13 @@ function handleChannelMessage(message: unknown): void {
     const requestId = String(payload.requestId || "").trim();
     const pending = pendingSignalResponses.get(requestId);
     if (!pending) return;
+    const resultPayload = payload.result && typeof payload.result === "object"
+      ? payload.result as Record<string, unknown>
+      : null;
+    const nestedPayload = resultPayload?.payload && typeof resultPayload.payload === "object"
+      ? resultPayload.payload as Record<string, unknown>
+      : null;
+    appendLog(`channel gateway.signal.response ${requestId} ok=${payload.ok === true} keys=${resultPayload ? Object.keys(resultPayload).join(",") : "(none)"} payloadKeys=${nestedPayload ? Object.keys(nestedPayload).join(",") : "(none)"}`);
     clearTimeout(pending.timer);
     pendingSignalResponses.delete(requestId);
     const ok = payload.ok === true;
@@ -274,17 +561,63 @@ async function requestLaunchContextFromShell(launchId: string): Promise<LaunchCo
   return await promise;
 }
 
-async function requestGatewaySignal(signalType: string, payload: unknown): Promise<GatewaySignalResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
-  const bc = ensureChannel();
-  const requestId = randomOpaqueId("nvr-signal");
+async function requestLaunchContextFromRuntime(launchId: string): Promise<LaunchContext | null> {
+  const result = await runtimeCall<LaunchContext | null>("launchContext.get", { launchId }, LAUNCH_REQUEST_TIMEOUT_MS);
+  return result || null;
+}
+
+function waitForShellSignalResponse(requestId: string, timeoutMs: number): {
+  promise: Promise<GatewaySignalResult>;
+  cancel: () => void;
+} {
+  let settled = false;
   const promise = new Promise<GatewaySignalResult>((resolve, reject) => {
     const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
       pendingSignalResponses.delete(requestId);
-      reject(new Error(`${signalType} signaling timed out`));
-    }, SIGNAL_REQUEST_TIMEOUT_MS);
-    pendingSignalResponses.set(requestId, { resolve, reject, timer });
+      reject(new Error("shell signal response timed out"));
+    }, timeoutMs);
+    pendingSignalResponses.set(requestId, {
+      resolve: (value: GatewaySignalResult) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        pendingSignalResponses.delete(requestId);
+        resolve(value);
+      },
+      reject: (error: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        pendingSignalResponses.delete(requestId);
+        reject(error);
+      },
+      timer,
+    });
   });
+  return {
+    promise,
+    cancel: () => {
+      if (settled) return;
+      settled = true;
+      const pending = pendingSignalResponses.get(requestId);
+      if (pending) {
+        window.clearTimeout(pending.timer);
+        pendingSignalResponses.delete(requestId);
+      }
+    },
+  };
+}
+
+async function requestGatewaySignalViaShellChannel(
+  signalType: string,
+  payload: unknown,
+  requestId: string,
+): Promise<GatewaySignalResult> {
+  if (!launchContext) throw new Error("launch context is not loaded");
+  const bc = ensureChannel();
+  const pending = waitForShellSignalResponse(requestId, SIGNAL_REQUEST_TIMEOUT_MS);
   bc.postMessage({
     type: "gateway.signal.request",
     launchId: launchContext.launchId,
@@ -292,7 +625,47 @@ async function requestGatewaySignal(signalType: string, payload: unknown): Promi
     signalType,
     payload,
   });
-  return await promise;
+  return await pending.promise;
+}
+
+async function requestGatewaySignal(signalType: string, payload: unknown): Promise<GatewaySignalResult> {
+  if (!launchContext) throw new Error("launch context is not loaded");
+  const requestId = randomOpaqueId("nvr-signal");
+  const runtimePort = await ensureRuntimePort();
+  if (!runtimePort) {
+    appendLog(`runtime broker unavailable; using shell channel for ${signalType}`);
+    return await requestGatewaySignalViaShellChannel(signalType, payload, requestId);
+  }
+  ensureChannel();
+  const mirroredResponse = waitForShellSignalResponse(requestId, SIGNAL_REQUEST_TIMEOUT_MS);
+  try {
+    const runtimeResult = await runtimeCall<GatewaySignalResult>("gateway.signal.request", {
+      payload: {
+        requestId,
+        gatewayPk: launchContext.gatewayPk,
+        servicePk: launchContext.servicePk,
+        service: launchContext.service || "nvr",
+        launchToken: launchContext.launchToken,
+        signalType,
+        payload,
+      },
+    }, Math.min(SIGNAL_REQUEST_TIMEOUT_MS, 8_000));
+    if (runtimeResult) {
+      mirroredResponse.cancel();
+      appendLog(`runtime broker delivered ${signalType} response`);
+      return runtimeResult;
+    }
+  } catch (error) {
+    appendLog(`runtime broker ${signalType} failed; waiting for shell mirror (${String((error as Error)?.message || error)})`);
+  }
+  try {
+    const mirrored = await mirroredResponse.promise;
+    appendLog(`shell channel delivered ${signalType} response`);
+    return mirrored.result;
+  } catch (error) {
+    appendLog(`shell mirror ${signalType} failed; retrying via shell channel (${String((error as Error)?.message || error)})`);
+    return await requestGatewaySignalViaShellChannel(signalType, payload, randomOpaqueId("nvr-signal-bc"));
+  }
 }
 
 function normalizeSourceIds(value: unknown): string[] {
@@ -423,6 +796,25 @@ async function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 8_
   });
 }
 
+function sameIceCandidate(left: RTCIceCandidateInit, right: RTCIceCandidateInit): boolean {
+  return (
+    String(left.candidate || "") === String(right.candidate || "") &&
+    String(left.sdpMid || "") === String(right.sdpMid || "") &&
+    Number(left.sdpMLineIndex ?? -1) === Number(right.sdpMLineIndex ?? -1) &&
+    String(left.usernameFragment || "") === String(right.usernameFragment || "")
+  );
+}
+
+async function addRemoteIceCandidates(
+  pc: RTCPeerConnection,
+  candidates: RTCIceCandidateInit[],
+): Promise<void> {
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || !String(candidate.candidate || "").trim()) continue;
+    await pc.addIceCandidate(candidate);
+  }
+}
+
 function localDescriptionPayload(pc: RTCPeerConnection): { type: string; sdp: string } {
   const desc = pc.localDescription;
   if (!desc?.type || !desc.sdp) throw new Error("local WebRTC offer is missing");
@@ -433,7 +825,8 @@ function localDescriptionPayload(pc: RTCPeerConnection): { type: string; sdp: st
 }
 
 function extractAnswerDescription(result: GatewaySignalResult): RTCSessionDescriptionInit {
-  const root = (result.result || {}) as Record<string, unknown>;
+  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
   const payload = (root.payload || root.result || root) as Record<string, unknown>;
 
   const direct = payload && typeof payload === "object"
@@ -455,10 +848,38 @@ function extractAnswerDescription(result: GatewaySignalResult): RTCSessionDescri
 }
 
 function extractGrantedSources(result: GatewaySignalResult, fallback: string[]): string[] {
-  const root = (result.result || {}) as Record<string, unknown>;
+  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
   const payload = (root.payload || root.result || root) as Record<string, unknown>;
   const sources = normalizeSourceIds(payload?.sources);
   return sources.length > 0 ? sources : fallback;
+}
+
+function extractRemoteCandidates(result: GatewaySignalResult): RTCIceCandidateInit[] {
+  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
+  const payload = (root.payload || root.result || root) as Record<string, unknown>;
+
+  const candidateSets = [
+    payload?.candidates,
+    (payload?.answer as Record<string, unknown> | undefined)?.candidates,
+    (payload?.payload as Record<string, unknown> | undefined)?.candidates,
+    (payload?.description as Record<string, unknown> | undefined)?.candidates,
+  ];
+
+  const collected: RTCIceCandidateInit[] = [];
+  for (const set of candidateSets) {
+    if (!Array.isArray(set)) continue;
+    for (const entry of set) {
+      if (!entry || typeof entry !== "object") continue;
+      const candidate = entry as RTCIceCandidateInit;
+      if (!String(candidate.candidate || "").trim()) continue;
+      if (!collected.some((existing) => sameIceCandidate(existing, candidate))) {
+        collected.push(candidate);
+      }
+    }
+  }
+  return collected;
 }
 
 function refreshSummary(context: LaunchContext): void {
@@ -469,20 +890,24 @@ function refreshSummary(context: LaunchContext): void {
   summaryGatewayEl.textContent = pkLabel(context.gatewayPk);
   summaryServiceEl.textContent = pkLabel(context.servicePk);
   summaryCamerasEl.textContent = String(display.cameraCount || display.configuredSources || normalizeSourceIds(display.sources).length || 0);
-  backLinkEl.href = shellBaseUrl();
 }
 
 async function loadLaunchContext(): Promise<LaunchContext> {
   const launchId = parseLaunchId();
-  if (!launchId) throw new Error("launch id is missing from the URL");
+  if (!launchId) throw launchError("launch_context", "launch id is missing from the URL");
+
+  const fromRuntime = await requestLaunchContextFromRuntime(launchId).catch(() => null);
+  if (fromRuntime) return fromRuntime;
 
   const stored = readStoredLaunchContext(launchId);
   if (stored) return stored;
 
   appendLog(`launch context ${launchId} not found locally; asking shell`);
-  const fromShell = await requestLaunchContextFromShell(launchId);
+  const fromShell = await requestLaunchContextFromShell(launchId).catch((error) => {
+    throw launchError("launch_context", String((error as Error)?.message || error || "launch context request failed"));
+  });
   if (fromShell) return fromShell;
-  throw new Error("launch context is unavailable; reopen this app from Constitute");
+  throw launchError("launch_context", "launch context is unavailable; reopen this app from Constitute");
 }
 
 function sourceIdForTrack(event: RTCTrackEvent): string {
@@ -497,12 +922,15 @@ function sourceIdForTrack(event: RTCTrackEvent): string {
 
 async function connectLiveGrid(context: LaunchContext): Promise<void> {
   const display = context.display || {};
+  app.dataset.launchStage = "gateway_signal";
+  setBootSplash("Connecting", "Negotiating live preview…");
   const requestedSources = normalizeSourceIds(display.sources);
   if (requestedSources.length === 0) {
     setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
     setBadge("no cameras", "warn");
     setSummaryState("no cameras");
     gridHintEl.textContent = "No enabled camera sources were advertised by the NVR service.";
+    void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "launch_authorization");
     return;
   }
 
@@ -516,6 +944,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   gridHintEl.textContent = "Negotiating live preview through the owned gateway.";
   setBadge("negotiating", "warn");
   setSummaryState("negotiating");
+  void reportServiceStatus("negotiating", "Negotiating live preview through the owned gateway.", "gateway_signal");
 
   const rtcConfig: RTCConfiguration = {
     iceServers: buildRtcIceServers(display.iceServers),
@@ -525,11 +954,20 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   peerConnection?.close();
   peerConnection = new RTCPeerConnection(rtcConfig);
   transceiverSourceIds = [...requestedSources];
+  const localCandidates: RTCIceCandidateInit[] = [];
 
   for (const sourceId of requestedSources) {
     peerConnection.addTransceiver("video", { direction: "recvonly" });
     setTileState(sourceId, "connecting", "Waiting for answer from the gateway.");
   }
+
+  peerConnection.addEventListener("icecandidate", (event) => {
+    const json = event.candidate?.toJSON();
+    if (!json || !String(json.candidate || "").trim()) return;
+    if (!localCandidates.some((existing) => sameIceCandidate(existing, json))) {
+      localCandidates.push(json);
+    }
+  });
 
   peerConnection.addEventListener("track", (event) => {
     const sourceId = sourceIdForTrack(event);
@@ -538,6 +976,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     setBadge("live", "good");
     setSummaryState("live");
     gridHintEl.textContent = "Receiving live H.264 preview.";
+    void reportServiceStatus("live", "Receiving live H.264 preview.", "webrtc_media");
   });
 
   peerConnection.addEventListener("connectionstatechange", () => {
@@ -547,6 +986,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
       setBadge(state, "bad");
       setSummaryState(state);
       markAllTiles("unavailable", "Peer connection dropped.");
+      void reportServiceStatus("degraded", `Peer connection ${state}.`, "webrtc_media");
     }
   });
 
@@ -559,10 +999,12 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     } else if (state === "connected" || state === "completed") {
       setBadge("connected", "good");
       setSummaryState("connected");
+      void reportServiceStatus("connected", "WebRTC peer connection established.", "webrtc_media");
     } else if (state === "failed") {
       setBadge("failed", "bad");
       setSummaryState("failed");
       markAllTiles("unavailable", "ICE connectivity failed.");
+      void reportServiceStatus("failed", "ICE connectivity failed.", "webrtc_media");
     }
   });
 
@@ -573,7 +1015,10 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   appendLog(`sending offer for ${requestedSources.length} source(s)`);
   const result = await requestGatewaySignal("offer", {
     description: localDescriptionPayload(peerConnection),
+    candidates: localCandidates,
     sourceIds: requestedSources,
+  }).catch((error) => {
+    throw launchError("gateway_signal", String((error as Error)?.message || error || "gateway signaling failed"));
   });
 
   const grantedSources = extractGrantedSources(result, requestedSources);
@@ -584,7 +1029,14 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   }
 
   const answer = extractAnswerDescription(result);
-  await peerConnection.setRemoteDescription(answer);
+  const remoteCandidates = extractRemoteCandidates(result);
+  app.dataset.launchStage = "webrtc_media";
+  await peerConnection.setRemoteDescription(answer).catch((error) => {
+    throw launchError("webrtc_media", String((error as Error)?.message || error || "remote description failed"));
+  });
+  await addRemoteIceCandidates(peerConnection, remoteCandidates).catch((error) => {
+    throw launchError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
+  });
   appendLog("remote answer applied");
   if (!hasLiveTiles()) {
     setBadge("connecting", "warn");
@@ -593,6 +1045,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
 }
 
 async function reconnect(): Promise<void> {
+  setBootSplash("Connecting", launchContext ? "Reconnecting live preview…" : "Restoring launch context…");
   if (!launchContext) {
     launchContext = await loadLaunchContext();
   }
@@ -623,29 +1076,43 @@ function fireAndForgetSessionClose(): void {
 }
 
 window.addEventListener("beforeunload", () => {
+  void reportServiceStatus("idle", "Security Cameras window closed.", "gateway_signal");
   fireAndForgetSessionClose();
   closePeerConnection();
 });
 
+installDiagnosticsBridge();
+applyDiagnosticsMode();
+updateCloseAppButton();
+
 async function bootstrap(): Promise<void> {
+  setBootSplash("Connecting", "Preparing your Security Cameras view.");
   setBadge("loading", "neutral");
   setSummaryState("loading");
+  app.dataset.launchStage = "launch_context";
   appendLog("bootstrapping managed NVR app surface");
+  void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "launch_context");
 
   launchContext = await loadLaunchContext();
+  setBootSplash("Connecting", "Launch context restored. Negotiating live preview…");
   appendLog(`launch context loaded for service ${pkLabel(launchContext.servicePk)}`);
   refreshSummary(launchContext);
   await reconnect();
+  dismissBootSplash();
 }
 
 void bootstrap().catch((error) => {
-  console.error(error);
+  const launchFailure = asManagedLaunchError(error, "launch_context");
+  console.error(launchFailure);
   closePeerConnection();
+  dismissBootSplash();
   setBadge("error", "bad");
   setSummaryState("error");
-  const message = String((error as Error)?.message || error || "Unknown error");
+  app.dataset.launchStage = launchFailure.stage;
+  const message = launchFailure.detail;
   subtitleEl.textContent = "Managed launch failed.";
   gridHintEl.textContent = message;
-  setGridEmpty("Launch Failed", message);
-  appendLog(`fatal: ${message}`);
+  setGridEmpty("Launch Failed", `${launchFailure.stage}: ${message}`);
+  appendLog(`fatal [${launchFailure.stage}] ${message}`);
+  void reportServiceStatus("error", message, launchFailure.stage);
 });

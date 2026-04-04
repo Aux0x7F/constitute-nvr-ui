@@ -4,8 +4,83 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Constitute NVR UI</title>
+    <style>
+      html, body { min-height: 100%; margin: 0; background: #080b11; color: #eef2f8; }
+      body.booting { overflow: hidden; }
+      #bootSplash {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        background:
+          radial-gradient(circle at top left, rgba(87, 209, 191, 0.16), transparent 30%),
+          radial-gradient(circle at top right, rgba(247, 185, 85, 0.10), transparent 22%),
+          linear-gradient(180deg, #0a0f18 0%, #080b11 100%);
+        transition: opacity 180ms ease;
+      }
+      body:not(.booting) #bootSplash {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .bootSplashCard {
+        width: min(28rem, calc(100vw - 3rem));
+        padding: 1.5rem 1.35rem;
+        border-radius: 1.4rem;
+        border: 1px solid rgba(176, 193, 217, 0.14);
+        background: rgba(15, 21, 33, 0.84);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
+        text-align: center;
+        backdrop-filter: blur(14px);
+      }
+      .bootSpinner {
+        width: 2.6rem;
+        height: 2.6rem;
+        margin: 0 auto 1rem;
+        border-radius: 999px;
+        border: 3px solid rgba(87, 209, 191, 0.18);
+        border-top-color: rgba(87, 209, 191, 0.96);
+        animation: bootSpin 0.9s linear infinite;
+      }
+      .bootSplashTitle {
+        margin: 0;
+        font: 700 1.4rem/1.1 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+        animation: bootLift 1.15s ease-in-out infinite alternate;
+      }
+      .bootSplashStatus {
+        margin: 0.55rem 0 0;
+        color: rgba(238, 242, 248, 0.72);
+        font: 400 0.98rem/1.45 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      }
+      @keyframes bootSpin { to { transform: rotate(360deg); } }
+      @keyframes bootLift {
+        from { transform: translateY(0) scale(1); text-shadow: 0 0 0 rgba(87, 209, 191, 0); }
+        to { transform: translateY(-2px) scale(1.015); text-shadow: 0 10px 28px rgba(87, 209, 191, 0.18); }
+      }
+    </style>
+    <script>
+      (() => {
+        const host = String(window.location.hostname || "").toLowerCase();
+        const path = String(window.location.pathname || "");
+        const isLocal = host === "localhost" || host === "127.0.0.1";
+        const atRepoRoot = /\/constitute-nvr-ui\/?$/.test(path);
+        if (!isLocal || !atRepoRoot) return;
+        const target = new URL("./dist/", window.location.href);
+        target.search = window.location.search;
+        target.hash = window.location.hash;
+        window.location.replace(target.toString());
+      })();
+    </script>
   </head>
-  <body>
+  <body class="booting">
+    <div id="bootSplash" aria-live="polite" role="status">
+      <div class="bootSplashCard">
+        <div class="bootSpinner" aria-hidden="true"></div>
+        <p id="bootSplashTitle" class="bootSplashTitle">Connecting</p>
+        <p id="bootSplashStatus" class="bootSplashStatus">Preparing your Security Cameras view.</p>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
