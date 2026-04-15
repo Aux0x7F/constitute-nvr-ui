@@ -1,187 +1,991 @@
 :root {
-  color-scheme: light;
-  font-family: "Segoe UI", "IBM Plex Sans", sans-serif;
+  color-scheme: dark;
+  --bg: #080b11;
+  --panel: rgba(15, 21, 33, 0.92);
+  --panel-strong: rgba(10, 16, 27, 0.96);
+  --line: rgba(176, 193, 217, 0.16);
+  --text: #eef2f8;
+  --muted: #95a4ba;
+  --accent: #57d1bf;
+  --warn: #f7b955;
+  --good: #59d391;
+  --bad: #f0717a;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(87, 209, 191, 0.14), transparent 30%),
+    radial-gradient(circle at top right, rgba(247, 185, 85, 0.08), transparent 24%),
+    linear-gradient(180deg, #0a0f18 0%, #080b11 100%);
+  color: var(--text);
+  font-family: var(--sans);
 }
 
 body {
-  margin: 0;
-  background: #f4f6f8;
-  color: #101828;
+  min-height: 100vh;
 }
 
-.layout {
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(to bottom, rgba(15, 21, 33, 0.95), rgba(15, 21, 33, 0.8));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.left,
+.right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.title {
   display: grid;
-  grid-template-columns: 340px 360px 1fr;
-  gap: 16px;
-  padding: 16px;
+  gap: 0.2rem;
 }
 
-.panel {
-  background: #ffffff;
-  border: 1px solid #d0d5dd;
-  border-radius: 10px;
-  padding: 14px;
-  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.06);
+.appname {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
 }
 
-h1,
-h2,
-h3 {
-  margin-top: 0;
-  margin-bottom: 10px;
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  max-width: 58rem;
 }
 
-label {
-  display: block;
-  margin-top: 10px;
-  margin-bottom: 6px;
-  font-size: 13px;
-  font-weight: 600;
+.iconbtn,
+.secondary,
+.badge,
+.navbtn,
+.settingsTab,
+.cameraActionButton,
+.smallbtn,
+.permissionChip,
+.cameraCapabilityChip {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
 }
 
-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px;
-  border: 1px solid #98a2b3;
-  border-radius: 6px;
-  background: #fcfcfd;
-}
-
-button {
-  border: 1px solid #344054;
-  background: #1d2939;
-  color: #ffffff;
-  border-radius: 6px;
-  padding: 8px 10px;
+.iconbtn,
+.secondary,
+.navbtn,
+.settingsTab,
+.smallbtn,
+.cameraActionButton {
   cursor: pointer;
 }
 
-button:disabled {
-  opacity: 0.45;
-  cursor: default;
+.iconbtn,
+.cameraActionButton {
+  border-radius: 12px;
+  padding: 0.45rem 0.6rem;
 }
 
-.row {
+.closeButton {
+  border-radius: 999px;
+  padding-inline: 0.9rem;
+}
+
+.secondary,
+.navbtn,
+.settingsTab,
+.smallbtn {
+  border-radius: 999px;
+  padding: 0.55rem 0.95rem;
+}
+
+.iconbtn:hover,
+.secondary:hover,
+.navbtn:hover,
+.settingsTab:hover,
+.cameraActionButton:hover {
+  border-color: rgba(87, 209, 191, 0.35);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.badge-neutral { color: var(--muted); }
+.badge-warn { color: var(--warn); border-color: rgba(247, 185, 85, 0.35); }
+.badge-good { color: var(--good); border-color: rgba(89, 211, 145, 0.35); }
+.badge-bad { color: var(--bad); border-color: rgba(240, 113, 122, 0.35); }
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 50;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 60;
+  width: min(360px, calc(100vw - 1rem));
+  height: 100%;
+  padding: 0.85rem;
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  flex-direction: column;
+  gap: 1rem;
+  background: rgba(15, 21, 33, 0.98);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
 }
 
-.row.wrap {
-  flex-wrap: wrap;
+.drawerHeader,
+.drawerFooter,
+.drawerStatusHeader {
+  display: grid;
+  gap: 0.3rem;
 }
 
-.status {
-  margin-top: 10px;
+.drawerHeader {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.drawerTitle {
+  font-weight: 800;
+}
+
+.drawerNav {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.navbtn.active,
+.settingsTab.active {
+  color: var(--accent);
+  border-color: rgba(87, 209, 191, 0.35);
+}
+
+.drawerFooter {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.drawerStatusRail {
+  margin-top: 0.2rem;
+}
+
+.drawerStatusInline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.identityHandle {
+  color: var(--muted);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.identityHandle-linked {
+  color: var(--accent);
+}
+
+.identityHandle-unlinked {
+  color: var(--warn);
+}
+
+.menu {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  width: min(360px, calc(100vw - 1rem));
+  background: rgba(18, 23, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  z-index: 80;
+  padding: 0.6rem;
+}
+
+.menu.hidden {
+  display: none;
+}
+
+.menuHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0.2rem 0.6rem;
+}
+
+.menuTitle {
+  font-weight: 700;
+}
+
+.menuList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.bellIcon {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.bellIcon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.iconbtn.has-unread .bellIcon path {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.connWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: max-content;
+}
+
+.connStateText {
+  font-size: 0.82rem;
+  color: var(--muted);
   font-weight: 600;
-  color: #067647;
+  user-select: none;
 }
 
-.status.warn {
-  color: #b42318;
+.connStateText-connected {
+  color: var(--accent);
 }
 
-.muted {
-  margin-top: 0;
-  color: #475467;
-  font-size: 13px;
+.connStateText-limited {
+  color: var(--warn);
+}
+
+.connStateText-error {
+  color: var(--bad);
+}
+
+.popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: 280px;
+  background: rgba(18, 23, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 0.7rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  z-index: 90;
+}
+
+.popover.hidden {
+  display: none;
+}
+
+.popoverTitle {
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.popoverRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  margin: 0.25rem 0;
+}
+
+.popoverDetails {
+  font-size: 0.82rem;
+  margin: 0.5rem 0 0;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.drawerStatusLabel {
+  font-weight: 700;
+}
+
+.drawerStatusDetail {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.appMain {
+  width: min(1380px, calc(100vw - 2.5rem));
+  margin: 0 auto;
+  padding: 1.15rem 0 2.5rem;
+}
+
+.activityPanel {
+  display: grid;
+  gap: 1rem;
+}
+
+.panel,
+.summaryItem,
+.cameraTile,
+.emptyState,
+.historyEmptyState,
+.permissionCard,
+.cameraListItem,
+.notificationItem,
+.nestedPanel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 1.2rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+.panel,
+.nestedPanel {
+  padding: 1rem 1.05rem;
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.85rem;
+}
+
+.compactHeader {
+  margin-bottom: 0.75rem;
+}
+
+.panelHeader h2,
+.notificationTitle {
+  margin: 0 0 0.3rem;
+}
+
+.panelHint,
+.subtitle,
+.notificationBody,
+.kv .k,
+.emptyState p,
+.historyEmptyState p {
+  color: var(--muted);
+}
+
+.summaryPanel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.8rem;
+}
+
+.summaryItem {
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.summaryLabel {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .cameraGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 10px;
-  margin-top: 8px;
-  margin-bottom: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.25rem;
+  justify-items: center;
+  align-items: start;
+}
+
+.cameraTile,
+.cameraListItem,
+.permissionCard,
+.notificationItem,
+.emptyState,
+.historyEmptyState {
+  padding: 0.9rem;
 }
 
 .cameraTile {
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 10px;
-  background: #f8fafc;
+  --camera-frame-max-height: min(58vh, 680px);
+  position: relative;
+  background: var(--panel-strong);
+  padding: 1rem;
+  overflow: hidden;
+  width: min(100%, calc((var(--camera-frame-max-height) * 16 / 9) + 2.1rem));
+  max-width: calc(100vw - 2rem);
 }
 
-.cameraTop {
+.cameraHeader {
+  margin-bottom: 0.65rem;
+}
+
+.cameraTitle {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.cameraVideoWrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  padding: 0.15rem;
+  width: min(100%, calc(var(--camera-frame-max-height) * 16 / 9));
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.cameraVideo {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  display: block;
+  object-fit: cover;
+  border-radius: 1rem;
+  background: #030507;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  z-index: 1;
+}
+
+.cameraTile.ptz-active .cameraVideo {
+  outline: 2px solid rgba(87, 209, 191, 0.45);
+  outline-offset: 2px;
+}
+
+.cameraStatusDot {
+  position: absolute;
+  top: 0.85rem;
+  left: 0.85rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  border: 2px solid rgba(8, 13, 23, 0.88);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  z-index: 4;
+}
+
+.cameraStatusDot-waiting { background: var(--muted); }
+.cameraStatusDot-connecting { background: var(--warn); }
+.cameraStatusDot-live { background: var(--good); }
+.cameraStatusDot-unavailable { background: var(--bad); }
+
+.cameraOverlayTop,
+.cameraOverlayBottom {
+  position: absolute;
+  inset-inline: 0.85rem;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 220ms ease;
+  pointer-events: none;
+  z-index: 5;
 }
 
-.cameraSub {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #475467;
+.cameraOverlayTop {
+  top: 0.85rem;
+  justify-content: flex-end;
+}
+
+.cameraOverlayBottom {
+  bottom: 0.85rem;
+  justify-content: flex-end;
+}
+
+.cameraPtzZones {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cameraPtzZone {
+  position: absolute;
+  border: 1px solid rgba(87, 209, 191, 0.22);
+  background: rgba(87, 209, 191, 0.12);
+  color: var(--text);
+  border-radius: 999px;
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 160ms ease, transform 220ms ease, border-color 160ms ease;
+  pointer-events: none;
+}
+
+.cameraTile.overlay-visible .cameraPtzZones.ptz-visible .cameraPtzZone {
+  opacity: 0.25;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.cameraPtzZone:hover,
+.cameraPtzZone:focus-visible {
+  opacity: 0.72 !important;
+  border-color: rgba(87, 209, 191, 0.5);
+}
+
+.cameraPtzZone-up {
+  top: 20%;
+  left: 50%;
+  transform: translate(-50%, 0) scale(0.92);
+}
+
+.cameraPtzZone-down {
+  bottom: 20%;
+  left: 50%;
+  transform: translate(-50%, 0) scale(0.92);
+}
+
+.cameraPtzZone-left {
+  left: 20%;
+  top: 50%;
+  transform: translate(0, -50%) scale(0.92);
+}
+
+.cameraPtzZone-right {
+  right: 20%;
+  top: 50%;
+  transform: translate(0, -50%) scale(0.92);
+}
+
+.cameraTile.overlay-visible .cameraOverlayTop,
+.cameraTile.overlay-visible .cameraOverlayBottom {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.cameraActionButton {
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background: rgba(8, 13, 23, 0.72);
+}
+
+.cameraActionButton.active {
+  color: var(--accent);
+  border-color: rgba(87, 209, 191, 0.35);
+}
+
+.cameraMetaRow,
+.cameraCapabilities,
+.permissionScopeSummary,
+.notificationMeta,
+.kv {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cameraCapabilities,
+.permissionScopeSummary {
+  margin-top: 0.65rem;
+}
+
+.cameraCapabilityChip,
+.permissionChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cameraCapabilityChip.good,
+.permissionChip.good {
+  color: var(--good);
+  border-color: rgba(89, 211, 145, 0.35);
+}
+
+.cameraCapabilityChip.warn,
+.permissionChip.warn {
+  color: var(--warn);
+  border-color: rgba(247, 185, 85, 0.35);
+}
+
+.cameraCapabilityChip.bad,
+.permissionChip.bad {
+  color: var(--bad);
+  border-color: rgba(240, 113, 122, 0.35);
+}
+
+.emptyState,
+.historyEmptyState {
+  min-height: 240px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 0.35rem;
+}
+
+.emptyStateTight {
+  min-height: 180px;
+}
+
+.notificationList,
+.permissionEditor,
+.cameraList,
+.cameraSettingsBody,
+.settingsSummary {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.warnText {
+  color: #f7b955;
+}
+
+.notificationItem {
+  display: grid;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
+.notificationItem.good { border-color: rgba(89, 211, 145, 0.28); }
+.notificationItem.warn { border-color: rgba(247, 185, 85, 0.28); }
+.notificationItem.bad { border-color: rgba(240, 113, 122, 0.28); }
+
+.notificationMeta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.settingsTabs {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.settingsPanel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.permissionCard,
+.cameraListItem {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.cameraCandidateItem {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.permissionCardHeader,
+.cameraCandidateHeader,
+.cameraListHeader,
+.cameraListActions,
+.permissionCardActions,
+.permissionCameraList {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.permissionCameraMatrix {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.permissionCameraRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.permissionToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+
+.permissionToggle input,
+.permissionCameraRow input {
+  width: auto;
+}
+
+.permissionComposer,
+.cameraSettingsPermissions {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.permissionComposer label,
+.cameraSettingsPermissions label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.cameraCandidateComposer {
+  margin-top: 0.15rem;
+}
+
+.permissionComposer input,
+.cameraConfigPanel input,
+.cameraConfigPanel select,
+.cameraSettingsPermissions input,
+.permissionComposer textarea,
+.cameraSettingsPermissions textarea {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 0.6rem 0.7rem;
+  outline: none;
+}
+
+.cameraListItem.expanded {
+  border-color: rgba(87, 209, 191, 0.22);
+}
+
+.cameraListHeading {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.cameraListMeta {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.cameraSection {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cameraSectionActions {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.cameraSectionBody {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.cameraSectionBody label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.cameraAccessSummary {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cameraSettingsTray {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.2rem;
+  animation: cameraTrayIn 220ms ease;
+}
+
+.cameraConfigPanel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.cameraConfigGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.cameraConfigGrid label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.cameraConfigWide {
+  grid-column: 1 / -1;
+}
+
+.cameraCheckboxRow {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+.cameraCheckboxRow input {
+  width: auto;
+}
+
+.probeSummary {
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.probeSummary.good { border-color: rgba(89, 211, 145, 0.28); color: #d7f5e3; }
+.probeSummary.warn { border-color: rgba(247, 185, 85, 0.28); color: #ffe4aa; }
+.probeSummary.bad { border-color: rgba(240, 113, 122, 0.28); color: #ffd6da; }
+
+.probeOutput {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.85rem;
+  border-radius: 0.9rem;
+  background: rgba(2, 6, 12, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: #d7e0ef;
+  font: 0.82rem/1.45 var(--mono);
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
-.cameraBadge {
-  font-size: 11px;
-  line-height: 1;
-  text-transform: uppercase;
-  border: 1px solid #d0d5dd;
-  border-radius: 999px;
-  padding: 3px 7px;
-  background: #ffffff;
+.cameraTile.selected {
+  border-color: rgba(87, 209, 191, 0.22);
 }
 
-.cameraBadge.configured {
-  border-color: #7cd4fd;
-  color: #095c85;
-  background: #e0f2fe;
+@keyframes cameraTrayIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.cameraBadge.discovered {
-  border-color: #9ee6b7;
-  color: #0f5132;
-  background: #dcfce7;
-}
-
-.cameraEmpty {
-  border: 1px dashed #98a2b3;
-  border-radius: 8px;
-  padding: 12px;
-  text-align: center;
-  color: #667085;
-  background: #fcfcfd;
-}
-
-.logs {
-  min-height: 520px;
-}
-
-pre {
-  white-space: pre-wrap;
-  background: #0f172a;
-  color: #e2e8f0;
-  border-radius: 8px;
-  padding: 10px;
-  min-height: 460px;
-  max-height: 68vh;
-  overflow: auto;
+.log {
   margin: 0;
-  font-size: 12px;
-}
-
-.downloads {
-  margin-top: 8px;
-  padding-left: 18px;
-  max-height: 140px;
+  min-height: 180px;
+  max-height: 320px;
   overflow: auto;
+  padding: 0.9rem;
+  border-radius: 0.9rem;
+  background: rgba(2, 6, 12, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: #d7e0ef;
+  font: 0.85rem/1.5 var(--mono);
+  white-space: pre-wrap;
 }
 
-.downloads a {
-  color: #175cd3;
+.diagnostics-hidden {
+  display: none !important;
 }
 
-@media (max-width: 1200px) {
-  .layout {
+@media (max-width: 760px) {
+  .appMain {
+    width: min(100vw - 1rem, 100%);
+    padding-top: 0.8rem;
+  }
+
+  .topbar,
+  .panelHeader,
+  .cameraHeader,
+  .permissionCameraRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .right {
+    justify-content: flex-end;
+  }
+
+  .cameraGrid {
     grid-template-columns: 1fr;
   }
 
-  pre {
-    min-height: 280px;
+  .cameraTile {
+    --camera-frame-max-height: min(42vh, 360px);
+    width: 100%;
+    max-width: calc(100vw - 1rem);
+  }
+
+  .cameraVideoWrap {
+    width: 100%;
+  }
+
+  .permissionCameraRow {
+    grid-template-columns: 1fr;
   }
 }

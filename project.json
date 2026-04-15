@@ -1,0 +1,30 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "constitute-nvr-ui",
+  "projectType": "application",
+  "root": "constitute-nvr-ui",
+  "sourceRoot": "constitute-nvr-ui/src",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "constitute-nvr-ui",
+        "command": "npm run build"
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "constitute-nvr-ui",
+        "command": "npm run dev"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "constitute-nvr-ui",
+        "command": "npm run test:e2e"
+      }
+    }
+  }
+}
