@@ -25,6 +25,9 @@ type LaunchContext = {
       viewGranted: boolean;
       controlGranted: boolean;
       ptzCapable: boolean;
+      driverId?: string;
+      vendor?: string;
+      model?: string;
     }>;
     grantedScope?: {
       owner?: boolean;
@@ -47,6 +50,8 @@ type RuntimeMockConfig = {
   ownerInventory?: boolean;
   adminDelayMs?: number;
   applyDelayMs?: number;
+  sharedTrackStream?: boolean;
+  staleMountedDisplayNameAfterApply?: boolean;
   cameraNetwork?: {
     managed?: boolean;
     interface?: string;
@@ -199,17 +204,29 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
       }
 
       async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+        if (description?.type === "answer" && typeof description.sdp === "string" && !description.sdp.endsWith("\r\n")) {
+          throw new Error("answer SDP lost trailing CRLF");
+        }
         this.remoteDescription = description;
         this.iceConnectionState = "connected";
         this.connectionState = "connected";
         this.emit("iceconnectionstatechange");
         this.emit("connectionstatechange");
+        const sharedStream = runtimeConfig.sharedTrackStream ? new MediaStream() : null;
         for (const transceiver of this.transceivers) {
-          const stream = new MediaStream();
+          const stream = sharedStream || new MediaStream();
+          const canvas = document.createElement("canvas");
+          canvas.width = 16;
+          canvas.height = 16;
+          const ctx = canvas.getContext("2d");
+          ctx?.fillRect(0, 0, 16, 16);
+          const generated = canvas.captureStream(1).getVideoTracks()[0];
+          const track = generated.clone();
+          if (sharedStream) sharedStream.addTrack(track);
           this.emit("track", {
             transceiver,
             streams: [stream],
-            track: { id: `track-${transceiver.mid}` },
+            track,
           });
         }
       }
@@ -456,11 +473,16 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                   ? adminPayload.desired as Record<string, unknown>
                   : {};
                 const camera = mutableCameras.get(sourceId);
+                let responseDisplayName = "";
+                let responseDesiredDisplayName = "";
                 if (camera) {
+                  const previousName = String(camera.name || "").trim() || sourceId;
                   const nextName = String(desired.displayName || camera.name || "").trim() || camera.name;
                   const nextOverlayText = String(desired.overlayText || camera.overlayText || nextName).trim() || nextName;
                   camera.name = nextName;
                   camera.overlayText = nextOverlayText;
+                  responseDisplayName = runtimeConfig.staleMountedDisplayNameAfterApply ? previousName : camera.name;
+                  responseDesiredDisplayName = runtimeConfig.staleMountedDisplayNameAfterApply ? previousName : camera.name;
                 }
                 this.emit(runtimeResponse(requestId, {
                   requestId: signalRequestId,
@@ -471,7 +493,10 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                       mounted: camera
                         ? {
                             sourceId: camera.sourceId,
-                            displayName: camera.name,
+                            displayName: responseDisplayName,
+                            driverId: camera.driverId || "",
+                            vendor: camera.vendor || "",
+                            model: camera.model || "",
                             capabilities: {
                               liveView: true,
                               ptz: camera.ptzCapable,
@@ -481,12 +506,15 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                               overlayTimestamp: true,
                             },
                             desired: {
-                              displayName: camera.name,
+                              displayName: responseDesiredDisplayName,
                               overlayText: camera.overlayText,
                               overlayTimestamp: true,
                             },
                             observed: {
                               displayName: camera.name,
+                              driverId: camera.driverId || "",
+                              vendor: camera.vendor || "",
+                              model: camera.model || "",
                               overlayText: camera.overlayText,
                               overlayTimestamp: true,
                               ptzCapable: camera.ptzCapable,
@@ -516,6 +544,9 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                           mounted: cameras.map((camera) => ({
                             sourceId: camera.sourceId,
                             displayName: camera.name,
+                            driverId: camera.driverId || "",
+                            vendor: camera.vendor || "",
+                            model: camera.model || "",
                             capabilities: {
                               liveView: true,
                               ptz: camera.ptzCapable,
@@ -531,6 +562,9 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                             },
                             observed: {
                               displayName: camera.name,
+                              driverId: camera.driverId || "",
+                              vendor: camera.vendor || "",
+                              model: camera.model || "",
                               overlayText: camera.overlayText,
                               overlayTimestamp: true,
                               ptzCapable: camera.ptzCapable,
@@ -709,6 +743,32 @@ test("reconnects live preview automatically after the peer connection drops", as
   await expect(page.locator(".cameraStatusDot-live")).toHaveCount(2);
 });
 
+test("binds each preview tile to its own track even when remote tracks share one MediaStream", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    launchContext: buildLaunchContext(),
+    diagnostics: false,
+    expireOfferPreflight: false,
+    ownerInventory: false,
+    sharedTrackStream: true,
+  });
+  await page.goto("/#launch=launch-test-001");
+
+  await expect(page.locator(".cameraStatusDot-live")).toHaveCount(2);
+  const trackBinding = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll(".cameraTile video")).map((video) => {
+      const stream = (video as HTMLVideoElement).srcObject as MediaStream | null;
+      return {
+        trackIds: stream ? stream.getVideoTracks().map((track) => track.id) : [],
+      };
+    });
+  });
+
+  expect(trackBinding).toHaveLength(2);
+  expect(trackBinding[0]?.trackIds).toHaveLength(1);
+  expect(trackBinding[1]?.trackIds).toHaveLength(1);
+  expect(trackBinding[0]?.trackIds[0]).not.toBe(trackBinding[1]?.trackIds[0]);
+});
+
 test("hides the close affordance when no shell opener is available", async ({ page }) => {
   await installRuntimeHarness(page);
   await page.goto("/#launch=launch-test-001");
@@ -850,6 +910,55 @@ test("camera settings use site time policy and do not expose per-camera time con
   await expect(summary).toContainText("192.168.250.1");
   await expect(summary).toContainText("Timezone");
   await expect(summary).toContainText("America/Phoenix");
+});
+
+test("xm camera settings show XM driver truth and no PTZ fallback rows", async ({ page }) => {
+  const context = buildLaunchContext({
+    display: {
+      serviceLabel: "Lab NVR",
+      serviceVersion: "0.2.0",
+      service: "nvr",
+      status: "ready",
+      cameraCount: 1,
+      configuredSources: 1,
+      sources: ["cam-xm"],
+      cameras: [
+        {
+          sourceId: "cam-xm",
+          name: "XM Camera",
+          viewGranted: true,
+          controlGranted: true,
+          ptzCapable: false,
+          driverId: "xm_40e",
+          vendor: "XM/NetSurveillance",
+          model: "40E",
+        },
+      ],
+      grantedScope: {
+        owner: true,
+        viewSources: ["cam-xm"],
+        controlSources: ["cam-xm"],
+      },
+      iceServers: {
+        stun: ["stun:stun.example.invalid:3478"],
+      },
+    },
+  });
+
+  await installRuntimeHarness(page, {
+    launchContext: context,
+    ownerInventory: true,
+  });
+
+  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-xm");
+
+  const card = page.locator(".cameraListItem.expanded[data-source-id='cam-xm']");
+  await expect(card).toBeVisible();
+  await expect(card.locator(".nestedPanel")).toContainText("xm_40e");
+  await expect(card.locator(".nestedPanel")).toContainText("XM/NetSurveillance");
+  await expect(card.locator(".nestedPanel")).toContainText("40E");
+  await expect(card.locator(".nestedPanel")).not.toContainText("E1 Outdoor SE");
+  await expect(card.locator(".nestedPanel")).not.toContainText("Pose");
 });
 
 test("temporarily hides PTZ controls while PTZ is disabled", async ({ page }) => {
@@ -1170,4 +1279,55 @@ test("apply camera settings stays mounted while the request is pending", async (
   await expect(cameraCard).toBeVisible();
   await expect(nameInput).toHaveValue("Driveway");
   await expect(page.locator(".cameraListItem .cameraListHeading strong")).toHaveText("Driveway");
+});
+
+test("camera card title follows observed validated name when mounted displayName is stale", async ({ page }) => {
+  const context = buildLaunchContext({
+    display: {
+      serviceLabel: "Lab NVR",
+      serviceVersion: "0.2.0",
+      service: "nvr",
+      status: "ready",
+      cameraCount: 1,
+      configuredSources: 1,
+      sources: ["cam-front"],
+      cameras: [
+        {
+          sourceId: "cam-front",
+          name: "Front Door",
+          viewGranted: true,
+          controlGranted: true,
+          ptzCapable: true,
+        },
+      ],
+      grantedScope: {
+        owner: true,
+        viewSources: ["cam-front"],
+        controlSources: ["cam-front"],
+      },
+      iceServers: {
+        stun: ["stun:stun.example.invalid:3478"],
+      },
+    },
+  });
+
+  await installRuntimeHarness(page, {
+    launchContext: context,
+    diagnostics: false,
+    expireOfferPreflight: false,
+    ownerInventory: true,
+    staleMountedDisplayNameAfterApply: true,
+  });
+
+  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+
+  const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
+  const nameInput = cameraCard.locator(".cameraSettingsTray input[data-field='displayName']");
+  const applyButton = cameraCard.locator("button[data-action='apply-camera-settings']");
+
+  await expect(cameraCard.locator(".cameraListHeading strong")).toHaveText("Front Door");
+  await nameInput.fill("Driveway");
+  await applyButton.click();
+
+  await expect(cameraCard.locator(".cameraListHeading strong")).toHaveText("Driveway");
 });
