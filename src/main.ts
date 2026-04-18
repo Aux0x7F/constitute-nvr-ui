@@ -602,8 +602,8 @@ function cameraDisplayName(sourceId: string): string {
   if (!key) return "Camera";
   const mounted = mountedCameraRecord(key);
   const mountedLabel = String(
-    mounted?.displayName
-      || mounted?.observed?.displayName
+    mounted?.observed?.displayName
+      || mounted?.displayName
       || mounted?.desired?.displayName
       || "",
   ).trim();
@@ -1625,6 +1625,8 @@ function seedCameraDraftsFromInventory(): void {
   for (const camera of cameraInventory?.mounted || []) {
     const sourceId = String(camera.sourceId || "").trim();
     if (!sourceId) continue;
+    const supportsOverlayText = camera.capabilities?.overlayText === true;
+    const supportsOverlayTimestamp = camera.capabilities?.overlayTimestamp === true;
     const observedServices = camera.observed?.services || {};
     const observedOnvif = serviceEnabled(observedServices.onvif);
     const observedRtsp = serviceEnabled(observedServices.rtsp);
@@ -1634,8 +1636,12 @@ function seedCameraDraftsFromInventory(): void {
     const observed9000 = serviceEnabled(observedServices.proprietary9000);
     const nextDraft: CameraSettingsDraft = {
       displayName: String(camera.desired?.displayName || camera.displayName || camera.observed?.displayName || sourceId).trim() || sourceId,
-      overlayText: String(camera.desired?.overlayText || camera.observed?.overlayText || camera.displayName || camera.observed?.displayName || "").trim(),
-      overlayTimestamp: camera.desired?.overlayTimestamp !== false && camera.observed?.overlayTimestamp !== false,
+      overlayText: supportsOverlayText
+        ? String(camera.desired?.overlayText || camera.observed?.overlayText || camera.displayName || camera.observed?.displayName || "").trim()
+        : "",
+      overlayTimestamp: supportsOverlayTimestamp
+        ? camera.desired?.overlayTimestamp !== false && camera.observed?.overlayTimestamp !== false
+        : false,
       desiredPassword: String(camera.desired?.desiredPassword || "").trim(),
       generatePassword: camera.desired?.generatePassword === true,
       enableOnvif: typeof camera.desired?.hardening?.enableOnvif === "boolean"
@@ -1678,6 +1684,7 @@ async function saveCameraSettings(sourceId: string): Promise<void> {
   const key = String(sourceId || "").trim();
   if (!key) throw new Error("camera source is missing");
   const draft = cameraSettingsDraft(sourceId);
+  const caps = cameraCapabilities(sourceId);
   cameraApplyPending.add(key);
   updateCameraApplyUi(key);
   try {
@@ -1685,8 +1692,8 @@ async function saveCameraSettings(sourceId: string): Promise<void> {
       sourceId,
       desired: {
         displayName: draft.displayName,
-        overlayText: draft.overlayText,
-        overlayTimestamp: draft.overlayTimestamp,
+        overlayText: caps.overlayText ? draft.overlayText : "",
+        overlayTimestamp: caps.overlayTimestamp ? draft.overlayTimestamp : false,
         desiredPassword: draft.desiredPassword,
         generatePassword: draft.generatePassword,
         hardening: {
@@ -2251,7 +2258,7 @@ function extractAnswerDescription(result: GatewaySignalResult): RTCSessionDescri
     direct;
 
   const type = String(candidate?.type || "").trim();
-  const sdp = String(candidate?.sdp || "").trim();
+  const sdp = typeof candidate?.sdp === "string" ? candidate.sdp : "";
   if (!type || !sdp) {
     throw new Error("gateway answer payload is missing type/sdp");
   }
@@ -2615,22 +2622,24 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   }
 
   const draft = cameraSettingsDraft(sourceId);
-  const vendor = String(mounted?.vendor || mounted?.observed?.vendor || "").trim() || "Reolink";
-  const model = String(mounted?.model || mounted?.observed?.model || "").trim() || "E1 Outdoor SE";
-  const driverId = String(mounted?.driverId || mounted?.observed?.driverId || "").trim() || "reolink";
+  const vendor = String(mounted?.vendor || mounted?.observed?.vendor || "").trim();
+  const model = String(mounted?.model || mounted?.observed?.model || "").trim();
+  const driverId = String(mounted?.driverId || mounted?.observed?.driverId || "").trim();
   const currentPose = currentPoseBySourceId.get(sourceId) || mounted?.currentPose || mounted?.observed?.currentPose || {};
   const poseStatus = String(poseStatusBySourceId.get(sourceId) || mounted?.poseStatus || mounted?.observed?.poseStatus || "idle").trim() || "idle";
   const adminWarning = viewerIsOwner() && !!cameraInventoryError;
+  const showPtzSummary = !!(PTZ_UI_ENABLED && (caps.ptz || camera.ptzCapable || mounted?.observed?.ptzCapable));
 
   const summaryPanel = document.createElement("section");
   summaryPanel.className = "nestedPanel";
   summaryPanel.innerHTML = `
     <div class="summaryLabel">Camera Summary</div>
-    ${renderKvRow("Driver", driverId)}
-    ${renderKvRow("Model", model)}
+    ${driverId ? renderKvRow("Driver", driverId) : ""}
+    ${vendor ? renderKvRow("Vendor", vendor) : ""}
+    ${model ? renderKvRow("Model", model) : ""}
     ${renderKvRow("Access", cameraAccessSummary(camera))}
-    ${PTZ_UI_ENABLED ? renderKvRow("PTZ", camera.ptzCapable ? (camera.controlGranted ? "owner control ready" : "available") : "not supported") : ""}
-    ${renderKvRow("Pose", formatPose(currentPose, poseStatus))}
+    ${showPtzSummary ? renderKvRow("PTZ", camera.controlGranted ? "owner control ready" : "available") : ""}
+    ${showPtzSummary ? renderKvRow("Pose", formatPose(currentPose, poseStatus)) : ""}
   `;
   tray.appendChild(summaryPanel);
 
@@ -2929,7 +2938,9 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     cancelScheduledReconnect();
     reconnectAttemptCount = 0;
     const sourceId = sourceIdForTrack(event);
-    const stream = event.streams[0] || new MediaStream([event.track]);
+    // Bind each preview tile to the specific remote video track instead of trusting
+    // browser stream grouping. Multiple remote video tracks may share one MediaStream id.
+    const stream = new MediaStream([event.track]);
     attachTrackToTile(sourceId || event.track.id, stream);
     setConnectionState("live", "good");
     setDrawerStatus("Live preview connected.");
