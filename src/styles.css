@@ -44,6 +44,12 @@ textarea {
   display: none !important;
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .topbar {
   position: sticky;
   top: 0;
@@ -66,22 +72,11 @@ textarea {
   gap: 0.6rem;
 }
 
-.title {
-  display: grid;
-  gap: 0.2rem;
-}
-
 .appname {
   margin: 0;
   font-size: 1.45rem;
   font-weight: 800;
   letter-spacing: 0.02em;
-}
-
-.subtitle {
-  margin: 0;
-  color: var(--muted);
-  max-width: 58rem;
 }
 
 .iconbtn,
@@ -377,7 +372,6 @@ textarea {
 }
 
 .panel,
-.summaryItem,
 .cameraTile,
 .emptyState,
 .historyEmptyState,
@@ -404,6 +398,14 @@ textarea {
   margin-bottom: 0.85rem;
 }
 
+.cameraHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .compactHeader {
   margin-bottom: 0.75rem;
 }
@@ -414,32 +416,11 @@ textarea {
 }
 
 .panelHint,
-.subtitle,
 .notificationBody,
 .kv .k,
 .emptyState p,
 .historyEmptyState p {
   color: var(--muted);
-}
-
-.summaryPanel {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.8rem;
-}
-
-.summaryItem {
-  padding: 0.9rem;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.summaryLabel {
-  display: block;
-  margin-bottom: 0.3rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
 }
 
 .cameraGrid {
@@ -837,6 +818,33 @@ textarea {
   display: flex;
   gap: 0.55rem;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.cameraApplyStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.cameraRefreshStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.inlineSpinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  border: 2px solid rgba(87, 209, 191, 0.18);
+  border-top-color: rgba(87, 209, 191, 0.9);
+  animation: spin 0.9s linear infinite;
 }
 
 .cameraSectionBody {
