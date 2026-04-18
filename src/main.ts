@@ -219,6 +219,7 @@ type CameraNetworkSummaryRecord = {
   dhcpRangeEnd?: string;
   ntpEnabled?: boolean;
   ntpServer?: string;
+  timezone?: string;
   dnsServer?: string;
   leaseFile?: string;
 };
@@ -283,15 +284,22 @@ type CameraTile = {
 };
 
 type RuntimeSnapshot = {
-  projections?: Record<string, Record<string, unknown>>;
+  buildId?: string;
+  updatedAt?: number;
+  shell?: Record<string, unknown> | null;
+  services?: Record<string, unknown>;
+  managedAppliances?: {
+    owned?: Array<Record<string, unknown>>;
+    granted?: Array<Record<string, unknown>>;
+    discoverable?: Array<Record<string, unknown>>;
+  };
+  resourceNames?: Record<string, unknown>;
+  managedServiceIssue?: Record<string, unknown> | null;
+  launchContextCount?: number;
 };
 
 type CameraSettingsDraft = {
   displayName: string;
-  timeMode: "ntp" | "manual";
-  ntpServer: string;
-  manualTime: string;
-  timezone: string;
   overlayText: string;
   overlayTimestamp: boolean;
   desiredPassword: string;
@@ -304,14 +312,24 @@ type CameraSettingsDraft = {
   preserveProprietary9000: boolean;
 };
 
-const APP_CHANNEL_NAME = "constitute.app.launch";
-const LAUNCH_STORAGE_PREFIX = "constitute.launch.";
+type CameraSettingsFocusSnapshot = {
+  sourceId: string;
+  field: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+};
+
 const DIAGNOSTICS_STORAGE_KEY = "constitute.nvr.diagnostics";
 const LAUNCH_REQUEST_TIMEOUT_MS = 6_000;
 const LAUNCH_REFRESH_TIMEOUT_MS = 20_000;
 const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
+const ADMIN_SIGNAL_REQUEST_TIMEOUT_MS = 135_000;
+const CAMERA_APPLY_REQUEST_TIMEOUT_MS = 135_000;
 const GRANT_REQUEST_TIMEOUT_MS = 30_000;
-const RUNTIME_WORKER_BUILD_ID = "2026-04-03-runtime-v1";
+const RUNTIME_WORKER_VERSION = Object.freeze({ major: 2, minor: 8 });
+const RUNTIME_WORKER_BUILD_ID = `runtime-${RUNTIME_WORKER_VERSION.major}.${RUNTIME_WORKER_VERSION.minor}`;
+const RUNTIME_ATTACH_TIMEOUT_MS = 5_000;
+const RUNTIME_WRITE_TIMEOUT_MS = 10_000;
 const LAUNCH_REFRESH_SKEW_MS = 15_000;
 const PTZ_STEP_DEGREES = 10;
 const PTZ_STEP_NORMALIZED = PTZ_STEP_DEGREES / 180;
@@ -325,7 +343,6 @@ if (!app) {
 }
 
 const shell = renderShell(app);
-const subtitleEl = shell.subtitleEl;
 const btnBellEl = shell.btnBellEl;
 const notifMenuEl = shell.notifMenuEl;
 const btnNotifClearEl = shell.btnNotifClearEl;
@@ -350,34 +367,22 @@ const historyViewEl = shell.historyViewEl;
 const settingsViewEl = shell.settingsViewEl;
 const bootSplashEl = document.getElementById("bootSplash");
 const bootSplashTitleEl = document.getElementById("bootSplashTitle");
-const bootSplashStatusEl = document.getElementById("bootSplashStatus");
-const summaryPanelEl = shell.summaryPanelEl;
-const summaryGatewayEl = shell.summaryGatewayEl;
-const summaryServiceEl = shell.summaryServiceEl;
-const summaryCamerasEl = shell.summaryCamerasEl;
-const summaryStateEl = shell.summaryStateEl;
-const gridHintEl = shell.gridHintEl;
 const cameraGridEl = shell.cameraGridEl;
-const btnReconnect = shell.btnReconnect;
 const historyHintEl = shell.historyHintEl;
 const settingsTabButtons = shell.settingsTabButtons;
 const nvrSettingsPanelEl = shell.nvrSettingsPanelEl;
 const camerasPanelEl = shell.camerasPanelEl;
 const cameraListEl = shell.cameraListEl;
 const addCameraButtonEl = shell.addCameraButtonEl;
+const cameraRefreshStatusEl = shell.cameraRefreshStatusEl;
 const logPanelEl = shell.logPanelEl;
 const logEl = shell.logEl;
 const nvrSettingsSummaryEl = document.getElementById("nvrSettingsSummary") as HTMLDivElement | null;
 
-const pendingLaunchResponses = new Map<string, PendingRequest<LaunchContext | null>>();
-const pendingSignalResponses = new Map<string, PendingRequest<GatewaySignalResult>>();
-const pendingGrantResponses = new Map<string, PendingRequest<GatewayGrantResult>>();
-const pendingGatewayLaunchResponses = new Map<string, PendingRequest<GatewayLaunchResult>>();
 const cameraTiles = new Map<string, CameraTile>();
 const launchCameraInfoBySourceId = new Map<string, LaunchCameraDisplay>();
 const notifications: NotificationEntry[] = [];
 
-let channel: BroadcastChannel | null = null;
 let runtimePort: MessagePort | null = null;
 let runtimeRequestSeq = 1;
 const pendingRuntimeResponses = new Map<string, PendingRequest<unknown>>();
@@ -398,9 +403,10 @@ let selectedLiveCameraId = "";
 let runtimeSnapshot: RuntimeSnapshot | null = null;
 const resolvedResourceNames = new Map<string, string>();
 const cameraSettingsDrafts = new Map<string, CameraSettingsDraft>();
+const dirtyCameraSettings = new Set<string>();
+const cameraApplyPending = new Set<string>();
 const candidateMountDrafts = new Map<string, CandidateMountDraft>();
 const cameraProbeResults = new Map<string, ProbeResultRecord>();
-const cameraNameOverrides = new Map<string, string>();
 const currentPoseBySourceId = new Map<string, CameraPoseView>();
 const desiredPoseBySourceId = new Map<string, CameraPoseView>();
 const poseStatusBySourceId = new Map<string, string>();
@@ -408,10 +414,14 @@ const knownCandidateIds = new Set<string>();
 let cameraInventory: CameraInventoryRecord | null = null;
 let cameraInventoryLoading = false;
 let cameraInventoryError = "";
+let cameraInventoryRefreshPromise: Promise<void> | null = null;
 let expandedCandidateId = "";
 let notificationMenuOpen = false;
 let identityHandleCopied = false;
 let launchRefreshPromise: Promise<LaunchContext> | null = null;
+let scheduledReconnectTimer = 0;
+let reconnectInFlight: Promise<void> | null = null;
+let reconnectAttemptCount = 0;
 
 function ptzUiCapable(camera: LaunchCameraDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true;
@@ -526,10 +536,6 @@ function setDrawerStatus(detail: string): void {
   popConnectionReasonEl.textContent = detail;
 }
 
-function setSummaryState(value: string): void {
-  summaryStateEl.textContent = value;
-}
-
 function shortPk(value: string): string {
   const raw = String(value || "").trim();
   if (!raw) return "—";
@@ -551,16 +557,10 @@ function resetIdentityHandleCopyHint(): void {
 
 function absorbRuntimeSnapshot(snapshot: unknown): void {
   runtimeSnapshot = (snapshot && typeof snapshot === "object") ? snapshot as RuntimeSnapshot : null;
-  const projections = runtimeSnapshot?.projections;
-  if (!projections || typeof projections !== "object") return;
-  for (const category of ["owned", "granted", "discoverable"]) {
-    const bucket = projections[category];
-    if (!bucket || typeof bucket !== "object") continue;
-    const appliances = Array.isArray(bucket.appliances) ? bucket.appliances as Array<Record<string, unknown>> : [];
-    for (const record of appliances) {
-      rememberResolvedResourceName(record.devicePk || record.pk, record.deviceLabel || record.label);
-      rememberResolvedResourceName(record.hostGatewayPk || record.host_gateway_pk, record.hostGatewayLabel || record.host_gateway_label);
-    }
+  const names = runtimeSnapshot?.resourceNames;
+  if (!names || typeof names !== "object") return;
+  for (const [pk, label] of Object.entries(names)) {
+    rememberResolvedResourceName(pk, label);
   }
 }
 
@@ -600,8 +600,6 @@ function humanizeSourceId(sourceId: string): string {
 function cameraDisplayName(sourceId: string): string {
   const key = String(sourceId || "").trim();
   if (!key) return "Camera";
-  const override = String(cameraNameOverrides.get(key) || "").trim();
-  if (override) return override;
   const mounted = mountedCameraRecord(key);
   const mountedLabel = String(
     mounted?.displayName
@@ -747,10 +745,9 @@ function shellBaseUrl(): string {
   return new URL("/constitute/", window.location.origin).toString();
 }
 
-function setBootSplash(title: string, status: string): void {
+function setBootSplash(title: string): void {
   if (!bootSplashEl || bootSplashDismissed) return;
   if (bootSplashTitleEl) bootSplashTitleEl.textContent = title;
-  if (bootSplashStatusEl) bootSplashStatusEl.textContent = status;
   document.body.classList.add("booting");
 }
 
@@ -900,54 +897,18 @@ function runtimeWorkerUrl(): string {
   return target.toString();
 }
 
-function launchStorageKey(launchId: string): string {
-  return `${LAUNCH_STORAGE_PREFIX}${launchId}`;
-}
-
-function writeStoredLaunchContext(context: LaunchContext): LaunchContext {
-  const launchId = String(context?.launchId || "").trim();
-  if (!launchId) throw new Error("launch context is missing launchId");
-  const stored = {
-    ...context,
-    createdAt: Number(context?.createdAt || Date.now()),
-    expiresAt: Number(context?.expiresAt || (Date.now() + (2 * 60_000))),
-  };
-  localStorage.setItem(launchStorageKey(launchId), JSON.stringify(stored));
-  return stored;
-}
-
-function readStoredLaunchContext(launchId: string): LaunchContext | null {
-  const key = launchStorageKey(launchId);
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LaunchContext;
-    const expiresAt = Number(parsed?.expiresAt || 0);
-    if (expiresAt && expiresAt < Date.now()) {
-      localStorage.removeItem(key);
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 function handleRuntimeMessage(message: unknown): void {
   if (!message || typeof message !== "object") return;
   const payload = message as Record<string, unknown>;
   const type = String(payload.type || "").trim();
-  if (type === "runtime.attached" || type === "status.snapshot") {
+  if (type === "runtime.attached" || type === "runtime.snapshot") {
     absorbRuntimeSnapshot(payload.snapshot);
     if (type === "runtime.attached" && resolveRuntimeReady) {
       resolveRuntimeReady(runtimePort);
       resolveRuntimeReady = null;
     }
     appendLog(`runtime ${type === "runtime.attached" ? "attached" : "snapshot"} ${String(payload.buildId || "")}`.trim());
-    if (launchContext) {
-      refreshSummary(launchContext);
-      renderCameraList();
-    }
+    refreshRuntimeProjectionLabels();
     return;
   }
   if (type === "runtime.ack") {
@@ -978,14 +939,19 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       }
       runtimeReadyPromise = null;
       runtimePort = null;
-      appendLog("runtime attach unavailable; falling back to local launch bootstrap");
-    }, 1_200);
+      appendLog("runtime attach unavailable");
+    }, RUNTIME_ATTACH_TIMEOUT_MS);
     resolveRuntimeReady = (value) => {
       window.clearTimeout(timeout);
       resolve(value);
     };
     try {
       const worker = new SharedWorker(runtimeWorkerUrl());
+      try {
+        worker.onerror = (event: ErrorEvent) => {
+          appendLog(`runtime worker error: ${String(event?.message || "worker failure")}`);
+        };
+      } catch {}
       runtimePort = worker.port;
       runtimePort.start();
       runtimePort.onmessage = (event) => handleRuntimeMessage(event.data);
@@ -997,7 +963,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       });
     } catch (error) {
       window.clearTimeout(timeout);
-      appendLog(`runtime attach unavailable; falling back (${String((error as Error)?.message || error)})`);
+      appendLog(`runtime attach unavailable (${String((error as Error)?.message || error)})`);
       runtimePort = null;
       runtimeReadyPromise = null;
       resolveRuntimeReady = null;
@@ -1007,9 +973,9 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
   return await runtimeReadyPromise;
 }
 
-async function runtimeCall<T = unknown>(type: string, payload: Record<string, unknown>, timeoutMs: number): Promise<T | null> {
+async function runtimeCall<T = unknown>(type: string, payload: Record<string, unknown>, timeoutMs: number): Promise<T> {
   const port = await ensureRuntimePort();
-  if (!port) return null;
+  if (!port) throw new Error("shared browser runtime unavailable");
   const requestId = randomOpaqueId("runtime");
   const promise = new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
@@ -1028,7 +994,7 @@ async function runtimeCall<T = unknown>(type: string, payload: Record<string, un
 
 async function reportServiceStatus(state: string, reason: string, stage: LaunchStage | "" = ""): Promise<void> {
   try {
-    await runtimeCall("status.update", {
+    await runtimeCall("runtime.status.put", {
       role: "service",
       service: "nvr",
       status: {
@@ -1038,114 +1004,12 @@ async function reportServiceStatus(state: string, reason: string, stage: LaunchS
         stage,
         updatedAt: Date.now(),
       },
-    }, 5_000);
+    }, RUNTIME_WRITE_TIMEOUT_MS);
   } catch {}
 }
 
-function ensureChannel(): BroadcastChannel {
-  if (channel) return channel;
-  if (typeof BroadcastChannel === "undefined") {
-    throw new Error("BroadcastChannel is not available in this browser");
-  }
-  channel = new BroadcastChannel(APP_CHANNEL_NAME);
-  channel.onmessage = (event) => handleChannelMessage(event.data);
-  return channel;
-}
-
-function handleChannelMessage(message: unknown): void {
-  if (!message || typeof message !== "object") return;
-  const payload = message as Record<string, unknown>;
-  const type = String(payload.type || "").trim();
-  if (type === "launch-context.response") {
-    const launchId = String(payload.launchId || "").trim();
-    const pending = pendingLaunchResponses.get(launchId);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    pendingLaunchResponses.delete(launchId);
-    const ok = payload.ok === true;
-    if (!ok) {
-      pending.resolve(null);
-      return;
-    }
-    pending.resolve((payload.context || null) as LaunchContext | null);
-    return;
-  }
-
-  if (type === "gateway.signal.response") {
-    const requestId = String(payload.requestId || "").trim();
-    const pending = pendingSignalResponses.get(requestId);
-    if (!pending) return;
-    const resultPayload = payload.result && typeof payload.result === "object"
-      ? payload.result as Record<string, unknown>
-      : null;
-    const nestedPayload = resultPayload?.payload && typeof resultPayload.payload === "object"
-      ? resultPayload.payload as Record<string, unknown>
-      : null;
-    appendLog(`channel gateway.signal.response ${requestId} ok=${payload.ok === true} keys=${resultPayload ? Object.keys(resultPayload).join(",") : "(none)"} payloadKeys=${nestedPayload ? Object.keys(nestedPayload).join(",") : "(none)"}`);
-    clearTimeout(pending.timer);
-    pendingSignalResponses.delete(requestId);
-    const ok = payload.ok === true;
-    if (!ok) {
-      pending.reject(new Error(String(payload.error || "gateway signaling failed")));
-      return;
-    }
-    pending.resolve({
-      requestId,
-      ok: true,
-      result: payload.result,
-    });
-    return;
-  }
-
-  if (type === "gateway.grant.response") {
-    const requestId = String(payload.requestId || "").trim();
-    const pending = pendingGrantResponses.get(requestId);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    pendingGrantResponses.delete(requestId);
-    const ok = payload.ok === true;
-    if (!ok) {
-      pending.reject(new Error(String(payload.error || "gateway grant request failed")));
-      return;
-    }
-    pending.resolve({
-      requestId,
-      ok: true,
-      result: payload.result,
-    });
-    return;
-  }
-
-  if (type === "gateway.launch.response") {
-    const requestId = String(payload.requestId || "").trim();
-    const pending = pendingGatewayLaunchResponses.get(requestId);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    pendingGatewayLaunchResponses.delete(requestId);
-    if (payload.ok !== true) {
-      pending.reject(new Error(String(payload.error || "gateway launch request failed")));
-      return;
-    }
-    pending.resolve(normalizeGatewayLaunchResult(payload.result, requestId));
-  }
-}
-
-async function requestLaunchContextFromShell(launchId: string): Promise<LaunchContext | null> {
-  const bc = ensureChannel();
-  const promise = new Promise<LaunchContext | null>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      pendingLaunchResponses.delete(launchId);
-      reject(new Error("launch context request timed out"));
-    }, LAUNCH_REQUEST_TIMEOUT_MS);
-    pendingLaunchResponses.set(launchId, { resolve, reject, timer });
-  });
-  bc.postMessage({ type: "launch-context.request", launchId });
-  return await promise;
-}
-
 async function requestLaunchContextFromRuntime(launchId: string): Promise<LaunchContext | null> {
-  const result = await runtimeCall<LaunchContext | null>("launchContext.get", { launchId }, LAUNCH_REQUEST_TIMEOUT_MS);
-  return result || null;
+  return await runtimeCall<LaunchContext | null>("launchContext.get", { launchId }, LAUNCH_REQUEST_TIMEOUT_MS);
 }
 
 function normalizeGatewayLaunchResult(result: unknown, fallbackRequestId = ""): GatewayLaunchResult {
@@ -1192,12 +1056,10 @@ function launchRefreshOptions(context: LaunchContext): Record<string, string> {
 }
 
 async function persistLaunchContext(context: LaunchContext): Promise<LaunchContext> {
-  const stored = writeStoredLaunchContext(context);
-  launchContext = stored;
-  refreshSummary(stored);
-  renderCameraList();
-  await runtimeCall("launchContext.put", { context: stored }, 5_000).catch(() => null);
-  return stored;
+  launchContext = context;
+  refreshSummary(context);
+  await runtimeCall("launchContext.put", { context }, RUNTIME_WRITE_TIMEOUT_MS);
+  return context;
 }
 
 function isExpiredLaunchTokenError(error: unknown): boolean {
@@ -1205,48 +1067,16 @@ function isExpiredLaunchTokenError(error: unknown): boolean {
   return message.includes("launch token expired") || message.includes("invalid_launch_token");
 }
 
-async function requestGatewayLaunchViaShellChannel(requestId: string): Promise<GatewayLaunchResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
-  const bc = ensureChannel();
-  const promise = new Promise<GatewayLaunchResult>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      pendingGatewayLaunchResponses.delete(requestId);
-      reject(new Error("gateway launch response timed out"));
-    }, LAUNCH_REFRESH_TIMEOUT_MS);
-    pendingGatewayLaunchResponses.set(requestId, { resolve, reject, timer });
-  });
-  bc.postMessage({
-    type: "gateway.launch.request",
-    launchId: launchContext.launchId,
-    requestId,
-    record: launchRefreshRecord(launchContext),
-    options: launchRefreshOptions(launchContext),
-  });
-  return await promise;
-}
-
 async function requestGatewayLaunch(): Promise<GatewayLaunchResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
-  const requestId = randomOpaqueId("nvr-launch");
-  const runtime = await ensureRuntimePort();
-  if (runtime) {
-    try {
-      const result = await runtimeCall<Record<string, unknown>>("gateway.launch.request", {
-        payload: {
-          record: launchRefreshRecord(launchContext),
-          options: launchRefreshOptions(launchContext),
-        },
-      }, LAUNCH_REFRESH_TIMEOUT_MS);
-      if (result) {
-        appendLog("runtime broker delivered launch refresh");
-        return normalizeGatewayLaunchResult(result, requestId);
-      }
-    } catch (error) {
-      appendLog(`runtime broker launch refresh failed; using shell channel (${String((error as Error)?.message || error)})`);
-    }
-  }
-  appendLog("requesting launch refresh from shell channel");
-  return await requestGatewayLaunchViaShellChannel(requestId);
+  const result = await runtimeCall<Record<string, unknown>>("gateway.launch.request", {
+    payload: {
+      record: launchRefreshRecord(launchContext),
+      options: launchRefreshOptions(launchContext),
+    },
+  }, LAUNCH_REFRESH_TIMEOUT_MS);
+  appendLog("runtime broker delivered launch refresh");
+  return normalizeGatewayLaunchResult(result);
 }
 
 async function ensureFreshLaunchContext(force = false, reason = ""): Promise<LaunchContext> {
@@ -1287,120 +1117,44 @@ async function ensureFreshLaunchContext(force = false, reason = ""): Promise<Lau
   }
 }
 
-function waitForShellSignalResponse(requestId: string, timeoutMs: number): {
-  promise: Promise<GatewaySignalResult>;
-  cancel: () => void;
-} {
-  let settled = false;
-  const promise = new Promise<GatewaySignalResult>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      pendingSignalResponses.delete(requestId);
-      reject(new Error("shell signal response timed out"));
-    }, timeoutMs);
-    pendingSignalResponses.set(requestId, {
-      resolve: (value: GatewaySignalResult) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        pendingSignalResponses.delete(requestId);
-        resolve(value);
-      },
-      reject: (error: Error) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        pendingSignalResponses.delete(requestId);
-        reject(error);
-      },
-      timer,
-    });
-  });
-  return {
-    promise,
-    cancel: () => {
-      if (settled) return;
-      settled = true;
-      const pending = pendingSignalResponses.get(requestId);
-      if (pending) {
-        window.clearTimeout(pending.timer);
-        pendingSignalResponses.delete(requestId);
-      }
-    },
-  };
-}
-
-async function requestGatewaySignalViaShellChannel(
+async function requestGatewaySignalOnce(
   signalType: string,
   payload: unknown,
-  requestId: string,
+  timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
 ): Promise<GatewaySignalResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
-  const bc = ensureChannel();
-  const pending = waitForShellSignalResponse(requestId, SIGNAL_REQUEST_TIMEOUT_MS);
-  bc.postMessage({
-    type: "gateway.signal.request",
-    launchId: launchContext.launchId,
-    requestId,
-    signalType,
-    payload,
-  });
-  return await pending.promise;
-}
-
-async function requestGatewaySignalOnce(signalType: string, payload: unknown): Promise<GatewaySignalResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
   const requestId = randomOpaqueId("nvr-signal");
-  const runtimePort = await ensureRuntimePort();
-  if (!runtimePort) {
-    appendLog(`runtime broker unavailable; using shell channel for ${signalType}`);
-    return await requestGatewaySignalViaShellChannel(signalType, payload, requestId);
-  }
-  ensureChannel();
-  const mirroredResponse = waitForShellSignalResponse(requestId, SIGNAL_REQUEST_TIMEOUT_MS);
-  try {
-    const runtimeResult = await runtimeCall<GatewaySignalResult>("gateway.signal.request", {
-      payload: {
-        requestId,
-        gatewayPk: launchContext.gatewayPk,
-        servicePk: launchContext.servicePk,
-        service: launchContext.service || "nvr",
-        launchToken: launchContext.launchToken,
-        signalType,
-        payload,
-      },
-    }, Math.min(SIGNAL_REQUEST_TIMEOUT_MS, 8_000));
-    if (runtimeResult) {
-      mirroredResponse.cancel();
-      appendLog(`runtime broker delivered ${signalType} response`);
-      return runtimeResult;
-    }
-  } catch (error) {
-    appendLog(`runtime broker ${signalType} failed; waiting for shell mirror (${String((error as Error)?.message || error)})`);
-  }
-  try {
-    const mirrored = await mirroredResponse.promise;
-    appendLog(`shell channel delivered ${signalType} response`);
-    return mirrored;
-  } catch (error) {
-    appendLog(`shell mirror ${signalType} failed; retrying via shell channel (${String((error as Error)?.message || error)})`);
-    return await requestGatewaySignalViaShellChannel(signalType, payload, randomOpaqueId("nvr-signal-bc"));
-  }
+  const runtimeResult = await runtimeCall<GatewaySignalResult>("gateway.signal.request", {
+    payload: {
+      requestId,
+      gatewayPk: launchContext.gatewayPk,
+      servicePk: launchContext.servicePk,
+      service: launchContext.service || "nvr",
+      launchToken: launchContext.launchToken,
+      signalType,
+      payload,
+    },
+  }, timeoutMs);
+  appendLog(`runtime broker delivered ${signalType} response`);
+  return runtimeResult;
 }
 
-async function requestGatewaySignal(signalType: string, payload: unknown): Promise<GatewaySignalResult> {
+async function requestGatewaySignal(
+  signalType: string,
+  payload: unknown,
+  timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
+): Promise<GatewaySignalResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
   await ensureFreshLaunchContext(false, `${signalType} preflight`);
   try {
-    return await requestGatewaySignalOnce(signalType, payload);
+    return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
   } catch (error) {
     if (!isExpiredLaunchTokenError(error)) {
       throw error;
     }
     appendLog(`launch token expired during ${signalType}; refreshing and retrying`);
     await ensureFreshLaunchContext(true, `${signalType} retry`);
-    return await requestGatewaySignalOnce(signalType, payload);
+    return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
   }
 }
 
@@ -1410,22 +1164,16 @@ async function requestGatewayGrantAction(
 ): Promise<GatewayGrantResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
   const requestId = randomOpaqueId("nvr-grant");
-  const bc = ensureChannel();
-  const promise = new Promise<GatewayGrantResult>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      pendingGrantResponses.delete(requestId);
-      reject(new Error("gateway grant response timed out"));
-    }, GRANT_REQUEST_TIMEOUT_MS);
-    pendingGrantResponses.set(requestId, { resolve, reject, timer });
-  });
-  bc.postMessage({
-    type: "gateway.grant.request",
-    launchId: launchContext.launchId,
-    requestId,
-    action,
-    ...payload,
-  });
-  return await promise;
+  return await runtimeCall<GatewayGrantResult>("gateway.grant.request", {
+    payload: {
+      requestId,
+      gatewayPk: launchContext.gatewayPk,
+      servicePk: launchContext.servicePk,
+      service: launchContext.service || "nvr",
+      action,
+      ...payload,
+    },
+  }, GRANT_REQUEST_TIMEOUT_MS);
 }
 
 function unwrapGatewaySignalPayload(result: GatewaySignalResult): Record<string, unknown> {
@@ -1442,11 +1190,14 @@ async function requestAdminAction(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
+  const timeoutMs = action === "apply_camera_config"
+    ? CAMERA_APPLY_REQUEST_TIMEOUT_MS
+    : ADMIN_SIGNAL_REQUEST_TIMEOUT_MS;
   try {
     const result = await requestGatewaySignal("admin", {
       action,
       payload,
-    });
+    }, timeoutMs);
     return unwrapGatewaySignalPayload(result);
   } catch (error) {
     throw new Error(normalizeAdminError(error));
@@ -1535,7 +1286,7 @@ function viewerIsOwner(): boolean {
 }
 
 function ownerCanAdmin(): boolean {
-  return viewerIsOwner() && !cameraInventoryError;
+  return viewerIsOwner();
 }
 
 function normalizeAdminError(error: unknown): string {
@@ -1553,14 +1304,8 @@ function normalizeAdminError(error: unknown): string {
 function defaultCameraSettingsDraft(sourceId: string): CameraSettingsDraft {
   const camera = launchCameraInfo(sourceId);
   const displayName = cameraDisplayName(sourceId);
-  const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-  const managedNtpServer = String(cameraInventory?.cameraNetwork?.ntpServer || "").trim();
   return {
     displayName,
-    timeMode: "ntp",
-    ntpServer: managedNtpServer,
-    manualTime: nowLocal,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     overlayText: String(displayName || camera?.name || "").trim(),
     overlayTimestamp: true,
     desiredPassword: "",
@@ -1640,10 +1385,120 @@ function cameraSettingsDraft(sourceId: string): CameraSettingsDraft {
 function updateCameraSettingsDraft(sourceId: string, patch: Partial<CameraSettingsDraft>): void {
   const key = String(sourceId || "").trim();
   if (!key) return;
-  cameraSettingsDrafts.set(key, {
-    ...cameraSettingsDraft(key),
+  const current = cameraSettingsDraft(key);
+  const next: CameraSettingsDraft = {
+    ...current,
     ...patch,
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(patch, "displayName") && !Object.prototype.hasOwnProperty.call(patch, "overlayText")) {
+    const previousName = String(current.displayName || "").trim();
+    const previousOverlay = String(current.overlayText || "").trim();
+    if (!previousOverlay || previousOverlay === previousName) {
+      next.overlayText = String(next.displayName || "").trim();
+    }
+  }
+  cameraSettingsDrafts.set(key, next);
+  dirtyCameraSettings.add(key);
+}
+
+function updateCameraListHeading(sourceId: string): void {
+  const key = String(sourceId || "").trim();
+  if (!key) return;
+  const item = cameraListEl.querySelector<HTMLElement>(`.cameraListItem[data-source-id="${CSS.escape(key)}"]`);
+  if (!item) return;
+  const title = item.querySelector<HTMLElement>(".cameraListHeading strong");
+  if (title) title.textContent = cameraDisplayName(key);
+}
+
+function updateCameraApplyUi(sourceId: string): void {
+  const key = String(sourceId || "").trim();
+  if (!key) return;
+  const tray = cameraListEl.querySelector<HTMLElement>(`.cameraSettingsTray[data-source-id="${CSS.escape(key)}"]`);
+  if (!tray) return;
+  const button = tray.querySelector<HTMLButtonElement>("button[data-action='apply-camera-settings']");
+  const status = tray.querySelector<HTMLElement>("[data-role='apply-status']");
+  const pending = cameraApplyPending.has(key);
+  if (button) {
+    button.disabled = pending;
+    button.textContent = pending ? "Applying Camera Settings…" : "Apply Camera Settings";
+  }
+  if (status) {
+    status.hidden = !pending;
+    status.setAttribute("aria-busy", pending ? "true" : "false");
+    status.innerHTML = pending
+      ? `<span class="inlineSpinner" aria-hidden="true"></span><span>Applying camera settings…</span>`
+      : "";
+  }
+}
+
+function cameraSettingsTrayOpen(): boolean {
+  return Boolean(
+    currentActivity === "settings"
+    && currentSettingsTab === "cameras"
+    && selectedCameraId
+    && cameraListEl.querySelector(`.cameraSettingsTray[data-source-id="${CSS.escape(selectedCameraId)}"]`),
+  );
+}
+
+function renderCameraRefreshStatus(): void {
+  const loading = cameraInventoryLoading;
+  addCameraButtonEl.disabled = loading;
+  addCameraButtonEl.textContent = loading ? "Refreshing Cameras…" : "Refresh Cameras";
+  cameraRefreshStatusEl.hidden = !loading;
+  cameraRefreshStatusEl.setAttribute("aria-busy", loading ? "true" : "false");
+  cameraRefreshStatusEl.innerHTML = loading
+    ? `<span class="inlineSpinner" aria-hidden="true"></span><span>Refreshing camera state…</span>`
+    : "";
+}
+
+function captureCameraSettingsFocus(): CameraSettingsFocusSnapshot | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement || active instanceof HTMLSelectElement || active instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+  if (!cameraListEl.contains(active)) return null;
+  const field = String(active.dataset.field || "").trim();
+  const tray = active.closest<HTMLElement>(".cameraSettingsTray");
+  const sourceId = String(tray?.dataset.sourceId || "").trim();
+  if (!field || !sourceId) return null;
+  return {
+    sourceId,
+    field,
+    selectionStart: active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? active.selectionStart : null,
+    selectionEnd: active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? active.selectionEnd : null,
+  };
+}
+
+function restoreCameraSettingsFocus(snapshot: CameraSettingsFocusSnapshot | null): void {
+  if (!snapshot) return;
+  const target = cameraListEl.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+    `.cameraSettingsTray[data-source-id="${CSS.escape(snapshot.sourceId)}"] [data-field="${CSS.escape(snapshot.field)}"]`,
+  );
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+    && snapshot.selectionStart != null && snapshot.selectionEnd != null) {
+    try {
+      target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+    } catch {}
+  }
+}
+
+function hasCameraInventoryData(): boolean {
+  return Boolean((cameraInventory?.mounted?.length || 0) > 0 || (cameraInventory?.candidates?.length || 0) > 0);
+}
+
+function upsertMountedCameraInventoryRecord(record: MountedCameraRecord | null | undefined): void {
+  const sourceId = String(record?.sourceId || "").trim();
+  if (!sourceId || !cameraInventory) return;
+  const mounted = Array.isArray(cameraInventory.mounted) ? cameraInventory.mounted.slice() : [];
+  const index = mounted.findIndex((camera) => String(camera.sourceId || "").trim() === sourceId);
+  if (index >= 0) mounted[index] = record as MountedCameraRecord;
+  else mounted.push(record as MountedCameraRecord);
+  cameraInventory = {
+    ...cameraInventory,
+    mounted,
+  };
 }
 
 function settingsCameraRows(): CameraGrantView[] {
@@ -1690,59 +1545,79 @@ function cameraCapabilities(sourceId: string): CameraCapabilitySet {
 }
 
 async function refreshCameraInventory(): Promise<void> {
-  if (!viewerIsOwner()) {
-    cameraInventory = null;
-    cameraInventoryLoading = false;
-    cameraInventoryError = "";
-    renderCameraList();
-    renderNvrSettingsSummary();
-    return;
+  if (cameraInventoryRefreshPromise) {
+    return await cameraInventoryRefreshPromise;
   }
-  cameraInventoryLoading = true;
-  cameraInventoryError = "";
-  renderCameraList();
-  renderNvrSettingsSummary();
-  try {
-    const payload = await requestAdminAction("list_inventory");
-    const inventory = payload.inventory && typeof payload.inventory === "object"
-      ? payload.inventory as CameraInventoryRecord
-      : { mounted: [], candidates: [], cameraNetwork: {} };
-    cameraInventory = {
-      mounted: Array.isArray(inventory.mounted) ? inventory.mounted : [],
-      candidates: Array.isArray(inventory.candidates) ? inventory.candidates : [],
-      cameraNetwork: inventory.cameraNetwork && typeof inventory.cameraNetwork === "object"
-        ? inventory.cameraNetwork as CameraNetworkSummaryRecord
-        : {},
-    };
-    seedCameraDraftsFromInventory();
-    for (const candidate of cameraInventory.candidates || []) {
-      const candidateId = String(candidate.candidateId || "").trim();
-      if (!candidateId || knownCandidateIds.has(candidateId)) continue;
-      knownCandidateIds.add(candidateId);
-      const label = String(candidate.signatures?.model || candidate.leaseHostname || "camera").trim();
-      addNotification(
-        "neutral",
-        `New camera discovered`,
-        `${label} is ready for review in Cameras.`,
-        "camera",
-        { activity: "settings", settingsTab: "cameras" },
-      );
+  cameraInventoryRefreshPromise = (async () => {
+    if (!viewerIsOwner()) {
+      cameraInventory = null;
+      cameraInventoryLoading = false;
+      cameraInventoryError = "";
+      renderCameraRefreshStatus();
+      renderCameraList();
+      renderNvrSettingsSummary();
+      return;
     }
+    const hadInventory = hasCameraInventoryData();
+    const previousInventory = cameraInventory;
+    const trayWasOpen = cameraSettingsTrayOpen();
+    cameraInventoryLoading = true;
     cameraInventoryError = "";
-  } catch (error) {
-    cameraInventoryError = normalizeAdminError(error);
-    addNotification("warn", "Camera inventory unavailable", cameraInventoryError, "camera", {
-      activity: "settings",
-      settingsTab: "nvr",
-    });
-    cameraInventory = { mounted: [], candidates: [], cameraNetwork: {} };
-  } finally {
-    cameraInventoryLoading = false;
-    for (const sourceId of cameraTiles.keys()) {
-      updateLiveTileMetadata(sourceId);
+    renderCameraRefreshStatus();
+    if (!hadInventory && cameraListEl.childElementCount === 0) {
+      renderCameraList();
     }
-    renderCameraList();
     renderNvrSettingsSummary();
+    try {
+      const payload = await requestAdminAction("list_inventory");
+      const inventory = payload.inventory && typeof payload.inventory === "object"
+        ? payload.inventory as CameraInventoryRecord
+        : { mounted: [], candidates: [], cameraNetwork: {} };
+      cameraInventory = {
+        mounted: Array.isArray(inventory.mounted) ? inventory.mounted : [],
+        candidates: Array.isArray(inventory.candidates) ? inventory.candidates : [],
+        cameraNetwork: inventory.cameraNetwork && typeof inventory.cameraNetwork === "object"
+          ? inventory.cameraNetwork as CameraNetworkSummaryRecord
+          : {},
+      };
+      seedCameraDraftsFromInventory();
+      for (const candidate of cameraInventory.candidates || []) {
+        const candidateId = String(candidate.candidateId || "").trim();
+        if (!candidateId || knownCandidateIds.has(candidateId)) continue;
+        knownCandidateIds.add(candidateId);
+        const label = String(candidate.signatures?.model || candidate.leaseHostname || "camera").trim();
+        addNotification(
+          "neutral",
+          `New camera discovered`,
+          `${label} is ready for review in Cameras.`,
+          "camera",
+          { activity: "settings", settingsTab: "cameras" },
+        );
+      }
+      cameraInventoryError = "";
+    } catch (error) {
+      cameraInventoryError = normalizeAdminError(error);
+      addNotification("warn", "Camera inventory unavailable", cameraInventoryError, "camera", {
+        activity: "settings",
+        settingsTab: "nvr",
+      });
+      cameraInventory = previousInventory || { mounted: [], candidates: [], cameraNetwork: {} };
+    } finally {
+      cameraInventoryLoading = false;
+      renderCameraRefreshStatus();
+      for (const sourceId of cameraTiles.keys()) {
+        updateLiveTileMetadata(sourceId);
+      }
+      if (!trayWasOpen || !hadInventory) {
+        renderCameraList();
+      }
+      renderNvrSettingsSummary();
+    }
+  })();
+  try {
+    await cameraInventoryRefreshPromise;
+  } finally {
+    cameraInventoryRefreshPromise = null;
   }
 }
 
@@ -1759,10 +1634,6 @@ function seedCameraDraftsFromInventory(): void {
     const observed9000 = serviceEnabled(observedServices.proprietary9000);
     const nextDraft: CameraSettingsDraft = {
       displayName: String(camera.desired?.displayName || camera.displayName || camera.observed?.displayName || sourceId).trim() || sourceId,
-      timeMode: String(camera.desired?.timeMode || camera.observed?.timeMode || "ntp").trim() === "manual" ? "manual" : "ntp",
-      ntpServer: String(camera.desired?.ntpServer || camera.observed?.ntpServer || "").trim(),
-      manualTime: String(camera.desired?.manualTime || camera.observed?.manualTime || "").trim(),
-      timezone: String(camera.desired?.timezone || camera.observed?.timezone || "UTC").trim() || "UTC",
       overlayText: String(camera.desired?.overlayText || camera.observed?.overlayText || camera.displayName || camera.observed?.displayName || "").trim(),
       overlayTimestamp: camera.desired?.overlayTimestamp !== false && camera.observed?.overlayTimestamp !== false,
       desiredPassword: String(camera.desired?.desiredPassword || "").trim(),
@@ -1786,15 +1657,8 @@ function seedCameraDraftsFromInventory(): void {
         ? camera.desired.hardening.preserveProprietary9000 !== false
         : observed9000 !== false,
     };
-    if (!cameraSettingsDrafts.has(sourceId)) {
+    if (!cameraSettingsDrafts.has(sourceId) || !dirtyCameraSettings.has(sourceId)) {
       cameraSettingsDrafts.set(sourceId, nextDraft);
-    }
-    const observedLabel = String(camera.displayName || camera.observed?.displayName || camera.desired?.displayName || "").trim();
-    if (observedLabel) {
-      const override = cameraNameOverrides.get(sourceId);
-      if (!override || override === observedLabel) {
-        cameraNameOverrides.set(sourceId, observedLabel);
-      }
     }
     const currentPose = camera.currentPose || camera.observed?.currentPose;
     if (currentPose) {
@@ -1811,63 +1675,67 @@ function seedCameraDraftsFromInventory(): void {
 }
 
 async function saveCameraSettings(sourceId: string): Promise<void> {
+  const key = String(sourceId || "").trim();
+  if (!key) throw new Error("camera source is missing");
   const draft = cameraSettingsDraft(sourceId);
-  if (draft.displayName.trim()) {
-    cameraNameOverrides.set(sourceId, draft.displayName.trim());
-    updateLiveTileMetadata(sourceId);
-  }
-  const payload = await requestAdminAction("apply_camera_config", {
-    sourceId,
-    desired: {
-      displayName: draft.displayName,
-      timeMode: draft.timeMode,
-      ntpServer: draft.ntpServer,
-      manualTime: draft.manualTime,
-      timezone: draft.timezone,
-      overlayText: draft.overlayText,
-      overlayTimestamp: draft.overlayTimestamp,
-      desiredPassword: draft.desiredPassword,
-      generatePassword: draft.generatePassword,
-      hardening: {
-        enableOnvif: draft.enableOnvif,
-        enableRtsp: draft.enableRtsp,
-        disableP2p: draft.disableP2p,
-        disableHttp: draft.disableHttp,
-        disableHttps: draft.disableHttps,
-        preserveProprietary9000: draft.preserveProprietary9000,
+  cameraApplyPending.add(key);
+  updateCameraApplyUi(key);
+  try {
+    const payload = await requestAdminAction("apply_camera_config", {
+      sourceId,
+      desired: {
+        displayName: draft.displayName,
+        overlayText: draft.overlayText,
+        overlayTimestamp: draft.overlayTimestamp,
+        desiredPassword: draft.desiredPassword,
+        generatePassword: draft.generatePassword,
+        hardening: {
+          enableOnvif: draft.enableOnvif,
+          enableRtsp: draft.enableRtsp,
+          disableP2p: draft.disableP2p,
+          disableHttp: draft.disableHttp,
+          disableHttps: draft.disableHttps,
+          preserveProprietary9000: draft.preserveProprietary9000,
+        },
       },
-    },
-  });
-  const mounted = payload.mounted && typeof payload.mounted === "object"
-    ? payload.mounted as MountedCameraRecord
-    : null;
-  const credentialStatus = String(mounted?.credentialSafety?.status || "").trim();
-  const notificationTone: NotificationTone =
-    mounted?.verification?.status === "verified" && !mounted?.credentialSafety?.pending && credentialStatus !== "failed"
-      ? "good"
-      : credentialStatus === "failed"
+    });
+    const mounted = payload.mounted && typeof payload.mounted === "object"
+      ? payload.mounted as MountedCameraRecord
+      : null;
+    const credentialStatus = String(mounted?.credentialSafety?.status || "").trim();
+    const notificationTone: NotificationTone =
+      credentialStatus === "failed"
         ? "bad"
-        : credentialStatus === "recovered" || mounted?.credentialSafety?.pending || mounted?.verification?.status === "drift"
+        : credentialStatus === "recovered" || mounted?.credentialSafety?.pending
           ? "warn"
-          : "neutral";
-  if (notificationTone !== "good") {
-    addNotification(
-      notificationTone,
-      `Camera settings need review`,
-      String(
-        mounted?.credentialSafety?.lastError ||
-        mounted?.verification?.message ||
-        "Camera configuration update was accepted."
-      ),
-      "camera",
-      {
-        activity: "settings",
-        settingsTab: "cameras",
-        cameraId: sourceId,
-      },
-    );
+          : "good";
+    if (notificationTone !== "good") {
+      addNotification(
+        notificationTone,
+        `Camera settings need review`,
+        String(
+          mounted?.credentialSafety?.lastError ||
+          mounted?.verification?.message ||
+          "Camera configuration update was accepted."
+        ),
+        "camera",
+        {
+          activity: "settings",
+          settingsTab: "cameras",
+          cameraId: sourceId,
+        },
+      );
+    }
+    dirtyCameraSettings.delete(key);
+    if (mounted?.sourceId) {
+      upsertMountedCameraInventoryRecord(mounted);
+      updateLiveTileMetadata(String(mounted.sourceId || ""));
+      updateCameraListHeading(String(mounted.sourceId || ""));
+    }
+  } finally {
+    cameraApplyPending.delete(key);
+    updateCameraApplyUi(key);
   }
-  await refreshCameraInventory();
 }
 
 async function mountCameraCandidate(candidateId: string): Promise<void> {
@@ -2495,6 +2363,7 @@ function renderNvrSettingsSummary(): void {
       ${renderKvRow("Host IP", String(network.hostIp || "not configured"))}
       ${renderKvRow("DHCP", network.dhcpEnabled ? `${String(network.dhcpRangeStart || "—")} → ${String(network.dhcpRangeEnd || "—")}` : "disabled")}
       ${renderKvRow("NTP", network.ntpEnabled ? String(network.ntpServer || "enabled") : "disabled")}
+      ${renderKvRow("Timezone", String(network.timezone || "UTC"))}
       ${renderKvRow("DNS", String(network.dnsServer || "not configured"))}
       ${cameraInventoryError ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError)}</p>` : ""}
     </section>`
@@ -2554,12 +2423,9 @@ function cameraAccessSummary(camera: LaunchCameraDisplay | null): string {
 }
 
 function renderCameraList(): void {
+  const focusSnapshot = captureCameraSettingsFocus();
   cameraListEl.innerHTML = "";
   if (!launchContext) return;
-  if (cameraInventoryLoading) {
-    cameraListEl.innerHTML = `<article class="emptyState emptyStateTight"><strong>Refreshing cameras</strong><p>Reading mounted cameras and discovery candidates from the managed NVR service.</p></article>`;
-    return;
-  }
   if (viewerIsOwner() && cameraInventoryError) {
     const warning = document.createElement("section");
     warning.className = "nestedPanel";
@@ -2588,6 +2454,7 @@ function renderCameraList(): void {
       const mounted = mountedCameraRecord(sourceId);
       const item = document.createElement("article");
       item.className = "cameraListItem";
+      item.dataset.sourceId = sourceId;
       const expanded = currentActivity === "settings" && currentSettingsTab === "cameras" && selectedCameraId === sourceId;
       item.classList.toggle("expanded", expanded);
       const vendor = String(mounted?.vendor || mounted?.observed?.vendor || "").trim();
@@ -2731,6 +2598,7 @@ function renderCameraList(): void {
     }
     cameraListEl.appendChild(section);
   }
+  restoreCameraSettingsFocus(focusSnapshot);
 }
 
 function buildCameraSettingsTray(sourceId: string): HTMLElement {
@@ -2738,9 +2606,9 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   const mounted = mountedCameraRecord(sourceId);
   const caps = mounted?.capabilities || {};
   const canAdmin = ownerCanAdmin();
-  const adminBlocked = viewerIsOwner() && !canAdmin;
   const tray = document.createElement("section");
   tray.className = "cameraSettingsTray";
+  tray.dataset.sourceId = sourceId;
   if (!camera) {
     tray.innerHTML = `<article class="emptyState emptyStateTight"><strong>Camera not found</strong><p>Select another camera to continue.</p></article>`;
     return tray;
@@ -2752,6 +2620,7 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   const driverId = String(mounted?.driverId || mounted?.observed?.driverId || "").trim() || "reolink";
   const currentPose = currentPoseBySourceId.get(sourceId) || mounted?.currentPose || mounted?.observed?.currentPose || {};
   const poseStatus = String(poseStatusBySourceId.get(sourceId) || mounted?.poseStatus || mounted?.observed?.poseStatus || "idle").trim() || "idle";
+  const adminWarning = viewerIsOwner() && !!cameraInventoryError;
 
   const summaryPanel = document.createElement("section");
   summaryPanel.className = "nestedPanel";
@@ -2765,12 +2634,12 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   `;
   tray.appendChild(summaryPanel);
 
-  if (adminBlocked) {
+  if (adminWarning) {
     const blockedPanel = document.createElement("section");
     blockedPanel.className = "nestedPanel";
     blockedPanel.innerHTML = `
       <div class="summaryLabel">Administration</div>
-      <p class="panelHint warnText">${escapeHtml(cameraInventoryError || "Camera administration is unavailable right now.")}</p>
+      <p class="panelHint warnText">${escapeHtml(cameraInventoryError || "Camera administration is degraded right now.")}</p>
     `;
     tray.appendChild(blockedPanel);
   }
@@ -2788,26 +2657,12 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   `;
   tray.appendChild(generalPanel);
 
-  if (caps.timeSync || caps.manualTime || caps.timezone || caps.overlayText || caps.overlayTimestamp) {
+  if (caps.overlayText || caps.overlayTimestamp) {
     const timePanel = document.createElement("section");
     timePanel.className = "cameraSection";
     timePanel.innerHTML = `
-      <div class="summaryLabel">Time & Overlay</div>
+      <div class="summaryLabel">Overlay</div>
       <div class="cameraSectionBody cameraConfigGrid">
-        ${
-          caps.timeSync || caps.manualTime
-            ? `<label>
-          <span>Clock Mode</span>
-          <select data-field="timeMode" ${canAdmin ? "" : "disabled"}>
-            ${caps.timeSync ? `<option value="ntp" ${draft.timeMode === "ntp" ? "selected" : ""}>NTP</option>` : ""}
-            ${caps.manualTime ? `<option value="manual" ${draft.timeMode === "manual" ? "selected" : ""}>Manual</option>` : ""}
-          </select>
-        </label>`
-            : ""
-        }
-        ${caps.timeSync ? `<label><span>NTP Server</span><input data-field="ntpServer" type="text" value="${escapeHtml(draft.ntpServer)}" ${canAdmin ? "" : "disabled"} /></label>` : ""}
-        ${caps.timezone ? `<label><span>Timezone</span><input data-field="timezone" type="text" value="${escapeHtml(draft.timezone)}" ${canAdmin ? "" : "disabled"} /></label>` : ""}
-        ${caps.manualTime ? `<label><span>Manual Time</span><input data-field="manualTime" type="datetime-local" value="${escapeHtml(draft.manualTime)}" ${canAdmin ? "" : "disabled"} /></label>` : ""}
         ${caps.overlayText ? `<label class="cameraConfigWide"><span>Overlay Text</span><input data-field="overlayText" type="text" value="${escapeHtml(draft.overlayText)}" ${canAdmin ? "" : "disabled"} /></label>` : ""}
         ${caps.overlayTimestamp ? `<label class="cameraCheckboxRow"><input data-field="overlayTimestamp" type="checkbox" ${draft.overlayTimestamp ? "checked" : ""} ${canAdmin ? "" : "disabled"} /><span>Show timestamp overlay</span></label>` : ""}
       </div>
@@ -2872,23 +2727,30 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   for (const input of Array.from(configRoot.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-field]"))) {
     const field = String(input.dataset.field || "").trim() as keyof CameraSettingsDraft;
     input.addEventListener("input", () => {
+      const previousDraft = cameraSettingsDraft(sourceId);
       const value = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
       updateCameraSettingsDraft(sourceId, { [field]: value } as Partial<CameraSettingsDraft>);
       if (field === "displayName") {
         const next = cameraSettingsDraft(sourceId);
-        cameraNameOverrides.set(sourceId, next.displayName.trim() || cameraDisplayName(sourceId));
-        renderCameraList();
-        updateLiveTileMetadata(sourceId);
+        if (next.overlayText !== previousDraft.overlayText) {
+          const overlayInput = configRoot.querySelector<HTMLInputElement>("input[data-field='overlayText']");
+          if (overlayInput && overlayInput !== document.activeElement) {
+            overlayInput.value = next.overlayText;
+          }
+        }
       }
     });
   }
   if (canAdmin) {
+    const applyPending = cameraApplyPending.has(sourceId);
     const saveRow = document.createElement("div");
     saveRow.className = "cameraSectionActions";
     const saveButton = document.createElement("button");
     saveButton.type = "button";
     saveButton.className = "secondary";
-    saveButton.textContent = "Save Camera Settings";
+    saveButton.dataset.action = "apply-camera-settings";
+    saveButton.textContent = applyPending ? "Applying Camera Settings…" : "Apply Camera Settings";
+    saveButton.disabled = applyPending;
     saveButton.addEventListener("click", () => {
       void saveCameraSettings(sourceId).catch((error) => {
         addNotification("bad", "Camera save failed", String((error as Error)?.message || error), "camera", {
@@ -2899,19 +2761,18 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
       });
     });
     saveRow.appendChild(saveButton);
+    const saveStatus = document.createElement("div");
+    saveStatus.className = "cameraApplyStatus";
+    saveStatus.dataset.role = "apply-status";
+    saveStatus.hidden = !applyPending;
+    saveStatus.setAttribute("aria-live", "polite");
+    saveStatus.setAttribute("aria-busy", applyPending ? "true" : "false");
+    if (applyPending) {
+      saveStatus.innerHTML = `<span class="inlineSpinner" aria-hidden="true"></span><span>Applying camera settings…</span>`;
+    }
+    saveRow.appendChild(saveStatus);
     tray.appendChild(saveRow);
   }
-
-  const timeModeInput = tray.querySelector<HTMLSelectElement>("select[data-field='timeMode']");
-  const ntpInput = tray.querySelector<HTMLInputElement>("input[data-field='ntpServer']");
-  const manualInput = tray.querySelector<HTMLInputElement>("input[data-field='manualTime']");
-  const applyTimeMode = () => {
-    const mode = String(timeModeInput?.value || draft.timeMode);
-    if (ntpInput) ntpInput.disabled = !canAdmin || mode !== "ntp";
-    if (manualInput) manualInput.disabled = !canAdmin || mode !== "manual";
-  };
-  applyTimeMode();
-  timeModeInput?.addEventListener("change", applyTimeMode);
 
   if (caps.rawProbe && viewerIsOwner()) {
     const probePanel = document.createElement("section");
@@ -2923,8 +2784,8 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
         <button type="button" class="secondary" data-action="probe" ${canAdmin ? "" : "disabled"}>Run Raw Probe</button>
       </div>
       ${
-        adminBlocked
-          ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError || "Camera administration is unavailable.")}</p>`
+        adminWarning
+          ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError || "Camera administration is degraded right now.")}</p>`
           : `<p class="panelHint">Read current driver-backed state and inspect structured raw payloads when something looks off.</p>`
       }
       ${
@@ -2950,6 +2811,17 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   return tray;
 }
 
+function cameraCountForContext(context: LaunchContext): number {
+  const display = context.display || {};
+  return Number(
+    display.cameraCount
+    || normalizeLaunchCameraEntries(display).length
+    || display.configuredSources
+    || normalizeSourceIds(display.sources).length
+    || 0,
+  );
+}
+
 function refreshSummary(context: LaunchContext): void {
   const display = context.display || {};
   rememberResolvedResourceName(context.servicePk, display.serviceLabel);
@@ -2957,56 +2829,39 @@ function refreshSummary(context: LaunchContext): void {
   for (const camera of normalizeLaunchCameraEntries(display)) {
     launchCameraInfoBySourceId.set(String(camera.sourceId || "").trim(), camera);
   }
-  subtitleEl.textContent = `${serviceLabelForContext(context)} • ${gatewayLabelForContext(context)} • ${String(
-    display.cameraCount
-    || normalizeLaunchCameraEntries(display).length
-    || display.configuredSources
-    || normalizeSourceIds(display.sources).length
-    || 0,
-  )} camera${Number(
-    display.cameraCount
-    || normalizeLaunchCameraEntries(display).length
-    || display.configuredSources
-    || normalizeSourceIds(display.sources).length
-    || 0,
-  ) === 1 ? "" : "s"}`;
-  summaryGatewayEl.textContent = gatewayLabelForContext(context);
-  summaryGatewayEl.title = context.gatewayPk;
-  summaryServiceEl.textContent = serviceLabelForContext(context);
-  summaryServiceEl.title = context.servicePk;
-  summaryCamerasEl.textContent = String(
-    display.cameraCount
-    || normalizeLaunchCameraEntries(display).length
-    || display.configuredSources
-    || normalizeSourceIds(display.sources).length
-    || 0,
-  );
   popGatewayEl.textContent = gatewayLabelForContext(context);
-  popServicesEl.textContent = `${summaryCamerasEl.textContent} camera${summaryCamerasEl.textContent === "1" ? "" : "s"}`;
+  popGatewayEl.title = context.gatewayPk;
+  const cameraCount = cameraCountForContext(context);
+  popServicesEl.textContent = `${serviceLabelForContext(context)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
+  popServicesEl.title = context.servicePk;
   refreshIdentityHandle();
   for (const sourceId of cameraTiles.keys()) {
     updateLiveTileMetadata(sourceId);
   }
   renderNvrSettingsSummary();
-  renderCameraList();
+}
+
+function refreshRuntimeProjectionLabels(): void {
+  if (!launchContext) return;
+  popGatewayEl.textContent = gatewayLabelForContext(launchContext);
+  popGatewayEl.title = launchContext.gatewayPk;
+  const cameraCount = cameraCountForContext(launchContext);
+  popServicesEl.textContent = `${serviceLabelForContext(launchContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
+  popServicesEl.title = launchContext.servicePk;
 }
 
 async function loadLaunchContext(): Promise<LaunchContext> {
   const launchId = parseLaunchId();
   if (!launchId) throw launchError("launch_context", "launch id is missing from the URL");
 
-  const fromRuntime = await requestLaunchContextFromRuntime(launchId).catch(() => null);
+  let fromRuntime: LaunchContext | null = null;
+  try {
+    fromRuntime = await requestLaunchContextFromRuntime(launchId);
+  } catch (error) {
+    throw launchError("launch_context", String((error as Error)?.message || error || "runtime launch context request failed"));
+  }
   if (fromRuntime) return fromRuntime;
-
-  const stored = readStoredLaunchContext(launchId);
-  if (stored) return stored;
-
-  appendLog(`launch context ${launchId} not found locally; asking shell`);
-  const fromShell = await requestLaunchContextFromShell(launchId).catch((error) => {
-    throw launchError("launch_context", String((error as Error)?.message || error || "launch context request failed"));
-  });
-  if (fromShell) return fromShell;
-  throw launchError("launch_context", "launch context is unavailable; reopen this app from Constitute");
+  throw launchError("launch_context", "launch context is unavailable in the shared runtime; reopen this app from Constitute");
 }
 
 function sourceIdForTrack(event: RTCTrackEvent): string {
@@ -3022,14 +2877,13 @@ function sourceIdForTrack(event: RTCTrackEvent): string {
 async function connectLiveGrid(context: LaunchContext): Promise<void> {
   const display = context.display || {};
   app.dataset.launchStage = "gateway_signal";
-  setBootSplash("Connecting", "Negotiating live preview…");
+  setBootSplash("Connecting");
   const requestedSources = normalizeSourceIds(display.sources);
   if (requestedSources.length === 0) {
+    cancelScheduledReconnect();
     setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
     setConnectionState("no cameras", "warn");
     setDrawerStatus("No enabled camera sources were advertised by the NVR service.");
-    setSummaryState("no cameras");
-    gridHintEl.textContent = "No enabled camera sources were advertised by the NVR service.";
     void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "launch_authorization");
     return;
   }
@@ -3041,10 +2895,8 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     setTileState(sourceId, "connecting", "Preparing WebRTC preview…");
   }
 
-  gridHintEl.textContent = "Preparing camera previews.";
   setConnectionState("negotiating", "warn");
   setDrawerStatus("Negotiating live preview through the owned gateway.");
-  setSummaryState("negotiating");
   void reportServiceStatus("negotiating", "Negotiating live preview through the owned gateway.", "gateway_signal");
 
   const rtcConfig: RTCConfiguration = {
@@ -3052,17 +2904,19 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     bundlePolicy: "max-bundle",
   };
 
-  peerConnection?.close();
-  peerConnection = new RTCPeerConnection(rtcConfig);
+  closePeerConnection();
+  const connection = new RTCPeerConnection(rtcConfig);
+  peerConnection = connection;
   transceiverSourceIds = [...requestedSources];
   const localCandidates: RTCIceCandidateInit[] = [];
 
   for (const sourceId of requestedSources) {
-    peerConnection.addTransceiver("video", { direction: "recvonly" });
+    connection.addTransceiver("video", { direction: "recvonly" });
     setTileState(sourceId, "connecting", "Waiting for answer from the gateway.");
   }
 
-  peerConnection.addEventListener("icecandidate", (event) => {
+  connection.addEventListener("icecandidate", (event) => {
+    if (peerConnection !== connection) return;
     const json = event.candidate?.toJSON();
     if (!json || !String(json.candidate || "").trim()) return;
     if (!localCandidates.some((existing) => sameIceCandidate(existing, json))) {
@@ -3070,59 +2924,52 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     }
   });
 
-  peerConnection.addEventListener("track", (event) => {
+  connection.addEventListener("track", (event) => {
+    if (peerConnection !== connection) return;
+    cancelScheduledReconnect();
+    reconnectAttemptCount = 0;
     const sourceId = sourceIdForTrack(event);
     const stream = event.streams[0] || new MediaStream([event.track]);
     attachTrackToTile(sourceId || event.track.id, stream);
     setConnectionState("live", "good");
     setDrawerStatus("Live preview connected.");
-    setSummaryState("live");
-    gridHintEl.textContent = "Move within a preview to reveal controls.";
     void reportServiceStatus("live", "Receiving live H.264 preview.", "webrtc_media");
   });
 
-  peerConnection.addEventListener("connectionstatechange", () => {
-    const state = peerConnection?.connectionState || "unknown";
+  connection.addEventListener("connectionstatechange", () => {
+    if (peerConnection !== connection) return;
+    const state = connection.connectionState || "unknown";
     appendLog(`peer connection state -> ${state}`);
     if (state === "failed" || state === "disconnected") {
-      setConnectionState(state, "bad");
-      setDrawerStatus(`Peer connection ${state}.`);
-      setSummaryState(state);
-      markAllTiles("unavailable", "Peer connection dropped.");
-      addNotification("bad", "Peer connection dropped", `Peer connection ${state}.`, "app");
-      void reportServiceStatus("degraded", `Peer connection ${state}.`, "webrtc_media");
+      scheduleAutomaticReconnect(`peer connection ${state}`);
     }
   });
 
-  peerConnection.addEventListener("iceconnectionstatechange", () => {
-    const state = peerConnection?.iceConnectionState || "unknown";
+  connection.addEventListener("iceconnectionstatechange", () => {
+    if (peerConnection !== connection) return;
+    const state = connection.iceConnectionState || "unknown";
     appendLog(`ice connection state -> ${state}`);
     if (state === "checking") {
       setConnectionState("checking", "warn");
       setDrawerStatus("Checking ICE connectivity.");
-      setSummaryState("checking");
     } else if (state === "connected" || state === "completed") {
+      cancelScheduledReconnect();
+      reconnectAttemptCount = 0;
       setConnectionState("connected", "good");
       setDrawerStatus("WebRTC peer connection established.");
-      setSummaryState("connected");
       void reportServiceStatus("connected", "WebRTC peer connection established.", "webrtc_media");
     } else if (state === "failed") {
-      setConnectionState("failed", "bad");
-      setDrawerStatus("ICE connectivity failed.");
-      setSummaryState("failed");
-      markAllTiles("unavailable", "ICE connectivity failed.");
-      addNotification("bad", "ICE failed", "WebRTC ICE connectivity failed for the managed preview.", "app");
-      void reportServiceStatus("failed", "ICE connectivity failed.", "webrtc_media");
+      scheduleAutomaticReconnect("ice connectivity failed");
     }
   });
 
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  await waitForIceGatheringComplete(peerConnection);
+  const offer = await connection.createOffer();
+  await connection.setLocalDescription(offer);
+  await waitForIceGatheringComplete(connection);
 
   appendLog(`sending offer for ${requestedSources.length} source(s)`);
   const result = await requestGatewaySignal("offer", {
-    description: localDescriptionPayload(peerConnection),
+    description: localDescriptionPayload(connection),
     candidates: localCandidates,
     sourceIds: requestedSources,
   }).catch((error) => {
@@ -3139,32 +2986,71 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   const answer = extractAnswerDescription(result);
   const remoteCandidates = extractRemoteCandidates(result);
   app.dataset.launchStage = "webrtc_media";
-  await peerConnection.setRemoteDescription(answer).catch((error) => {
+  await connection.setRemoteDescription(answer).catch((error) => {
     throw launchError("webrtc_media", String((error as Error)?.message || error || "remote description failed"));
   });
-  await addRemoteIceCandidates(peerConnection, remoteCandidates).catch((error) => {
+  await addRemoteIceCandidates(connection, remoteCandidates).catch((error) => {
     throw launchError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
   });
   appendLog("remote answer applied");
   if (!hasLiveTiles()) {
     setConnectionState("connecting", "warn");
     setDrawerStatus("Waiting for live media tracks.");
-    setSummaryState("connecting");
   }
 }
 
+function cancelScheduledReconnect(): void {
+  if (scheduledReconnectTimer) {
+    window.clearTimeout(scheduledReconnectTimer);
+    scheduledReconnectTimer = 0;
+  }
+}
+
+function scheduleAutomaticReconnect(reason: string): void {
+  if (!launchContext || scheduledReconnectTimer || reconnectInFlight) return;
+  reconnectAttemptCount += 1;
+  const delayMs = Math.min(5_000, 1_500 + ((reconnectAttemptCount - 1) * 1_000));
+  appendLog(`scheduling automatic reconnect in ${delayMs}ms (${reason})`);
+  setConnectionState("reconnecting", "warn");
+  setDrawerStatus("Live preview interrupted. Reconnecting automatically.");
+  for (const sourceId of cameraTiles.keys()) {
+    setTileState(sourceId, "connecting", "Reconnecting live preview…");
+  }
+  void reportServiceStatus("reconnecting", `Live preview interrupted; reconnecting automatically (${reason}).`, "webrtc_media");
+  scheduledReconnectTimer = window.setTimeout(() => {
+    scheduledReconnectTimer = 0;
+    reconnectInFlight = (async () => {
+      let retryReason = "";
+      try {
+        await reconnect();
+      } catch (error) {
+        const detail = String((error as Error)?.message || error || "automatic reconnect failed");
+        appendLog(`automatic reconnect failed: ${detail}`);
+        setConnectionState("reconnect failed", "bad");
+        setDrawerStatus(detail);
+        markAllTiles("unavailable", "Live preview unavailable.");
+        void reportServiceStatus("degraded", detail, "webrtc_media");
+        retryReason = detail;
+      } finally {
+        reconnectInFlight = null;
+        if (retryReason) scheduleAutomaticReconnect(retryReason);
+      }
+    })();
+  }, delayMs);
+}
+
 async function reconnect(): Promise<void> {
-  setBootSplash("Connecting", launchContext ? "Reconnecting live preview…" : "Restoring launch context…");
+  cancelScheduledReconnect();
+  setBootSplash("Connecting");
   if (!launchContext) {
     launchContext = await loadLaunchContext();
   }
   refreshSummary(launchContext);
-  await fetchGrantInventory();
-  await refreshCameraInventory();
   await connectLiveGrid(launchContext);
 }
 
 function closePeerConnection(): void {
+  cancelScheduledReconnect();
   if (peerConnection) {
     try {
       peerConnection.close();
@@ -3174,23 +3060,26 @@ function closePeerConnection(): void {
 }
 
 function fireAndForgetSessionClose(): void {
-  if (!launchContext || !channel) return;
+  if (!launchContext || !runtimePort) return;
   try {
-    channel.postMessage({
+    const requestId = randomOpaqueId("nvr-close");
+    runtimePort.postMessage({
       type: "gateway.signal.request",
-      launchId: launchContext.launchId,
-      requestId: randomOpaqueId("nvr-close"),
-      signalType: "session_close",
-      payload: { reason: "page_unload" },
+      requestId,
+      payload: {
+        requestId,
+        gatewayPk: launchContext.gatewayPk,
+        servicePk: launchContext.servicePk,
+        service: launchContext.service || "nvr",
+        launchToken: launchContext.launchToken,
+        signalType: "session_close",
+        payload: { reason: "page_unload" },
+      },
     });
   } catch {}
 }
 
 function bindUi(): void {
-  btnReconnect.addEventListener("click", () => {
-    void reconnect();
-  });
-
   btnBellEl.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleNotificationMenu();
@@ -3294,28 +3183,33 @@ installDiagnosticsBridge();
 applyDiagnosticsMode();
 updateCloseAppButton();
 bindUi();
+renderCameraRefreshStatus();
 setDrawerStatus("Waiting for managed launch context.");
 renderNotifications();
 refreshIdentityHandle();
 syncUiToHash();
 
 async function bootstrap(): Promise<void> {
-  setBootSplash("Connecting", "Preparing your Constitute NVR view.");
+  setBootSplash("Connecting");
   setConnectionState("loading", "neutral");
   setDrawerStatus("Preparing your Constitute NVR view.");
-  setSummaryState("loading");
   app.dataset.launchStage = "launch_context";
   appendLog("bootstrapping managed NVR app surface");
   void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "launch_context");
 
   launchContext = await loadLaunchContext();
   launchContext = await persistLaunchContext(launchContext);
-  setBootSplash("Connecting", "Launch context restored. Negotiating live preview…");
+  setBootSplash("Connecting");
   appendLog(`launch context loaded for service ${pkLabel(launchContext.servicePk)}`);
   refreshSummary(launchContext);
-  await fetchGrantInventory();
-  await refreshCameraInventory();
   syncUiToHash();
+  void fetchGrantInventory().catch(() => {});
+  void refreshCameraInventory().catch((error) => {
+    addNotification("warn", "Camera inventory unavailable", String((error as Error)?.message || error), "camera", {
+      activity: "settings",
+      settingsTab: "cameras",
+    });
+  });
   await reconnect();
   dismissBootSplash();
 }
@@ -3327,11 +3221,8 @@ void bootstrap().catch((error) => {
   dismissBootSplash();
   setConnectionState("error", "bad");
   setDrawerStatus(launchFailure.detail);
-  setSummaryState("error");
   app.dataset.launchStage = launchFailure.stage;
   const message = launchFailure.detail;
-  subtitleEl.textContent = "Managed launch failed.";
-  gridHintEl.textContent = message;
   setGridEmpty("Launch Failed", `${launchFailure.stage}: ${message}`);
   addNotification("bad", "Managed launch failed", message, "app");
   appendLog(`fatal [${launchFailure.stage}] ${message}`);

@@ -1,5 +1,4 @@
 export type NvrShell = {
-  subtitleEl: HTMLParagraphElement;
   btnBellEl: HTMLButtonElement;
   notifMenuEl: HTMLElement;
   btnNotifClearEl: HTMLButtonElement;
@@ -22,20 +21,14 @@ export type NvrShell = {
   liveViewEl: HTMLElement;
   historyViewEl: HTMLElement;
   settingsViewEl: HTMLElement;
-  summaryPanelEl: HTMLElement;
-  summaryGatewayEl: HTMLSpanElement;
-  summaryServiceEl: HTMLSpanElement;
-  summaryCamerasEl: HTMLSpanElement;
-  summaryStateEl: HTMLSpanElement;
-  gridHintEl: HTMLParagraphElement;
   cameraGridEl: HTMLDivElement;
-  btnReconnect: HTMLButtonElement;
   historyHintEl: HTMLParagraphElement;
   settingsTabButtons: HTMLButtonElement[];
   nvrSettingsPanelEl: HTMLElement;
   camerasPanelEl: HTMLElement;
   cameraListEl: HTMLDivElement;
   addCameraButtonEl: HTMLButtonElement;
+  cameraRefreshStatusEl: HTMLSpanElement;
   logPanelEl: HTMLElement;
   logEl: HTMLPreElement;
 };
@@ -50,10 +43,7 @@ export function renderShell(app: HTMLDivElement): NvrShell {
   app.innerHTML = `
     <header class="topbar">
       <div class="left">
-        <div class="title">
-          <h1 class="appname">Constitute NVR</h1>
-          <p id="subtitle" class="subtitle">Waiting for managed launch context…</p>
-        </div>
+        <h1 class="appname">Constitute NVR</h1>
       </div>
       <div class="right">
         <button id="btnBell" class="iconbtn" type="button" aria-label="Notifications">
@@ -107,32 +97,9 @@ export function renderShell(app: HTMLDivElement): NvrShell {
 
     <main class="appMain">
       <section id="liveView" class="activityPanel">
-        <section id="summaryPanel" class="panel summaryPanel">
-          <div class="summaryItem">
-            <span class="summaryLabel">Gateway</span>
-            <span id="summaryGateway" class="summaryValue">—</span>
-          </div>
-          <div class="summaryItem">
-            <span class="summaryLabel">Service</span>
-            <span id="summaryService" class="summaryValue">—</span>
-          </div>
-          <div class="summaryItem">
-            <span class="summaryLabel">Cameras</span>
-            <span id="summaryCameras" class="summaryValue">0</span>
-          </div>
-          <div class="summaryItem">
-            <span class="summaryLabel">State</span>
-            <span id="summaryState" class="summaryValue">waiting</span>
-          </div>
-        </section>
-
         <section class="panel">
           <div class="panelHeader">
-            <div>
-              <h2>Live</h2>
-              <p id="gridHint" class="panelHint">Launch context not loaded yet.</p>
-            </div>
-            <button id="btnReconnect" type="button" class="secondary">Reconnect</button>
+            <h2>Cameras</h2>
           </div>
           <div id="cameraGrid" class="cameraGrid">
             <article class="emptyState">
@@ -189,7 +156,10 @@ export function renderShell(app: HTMLDivElement): NvrShell {
               <h2>Cameras</h2>
               <p class="panelHint">Mounted cameras, discovery candidates, and driver-backed settings.</p>
             </div>
-            <button id="btnAddCamera" type="button" class="secondary">Refresh Cameras</button>
+            <div class="cameraHeaderActions">
+              <button id="btnAddCamera" type="button" class="secondary">Refresh Cameras</button>
+              <span id="cameraRefreshStatus" class="cameraRefreshStatus" hidden aria-live="polite"></span>
+            </div>
           </div>
           <div id="cameraList" class="cameraList"></div>
         </section>
@@ -198,7 +168,6 @@ export function renderShell(app: HTMLDivElement): NvrShell {
   `;
 
   return {
-    subtitleEl: byId<HTMLParagraphElement>("subtitle"),
     btnBellEl: byId<HTMLButtonElement>("btnBell"),
     notifMenuEl: byId<HTMLElement>("notifMenu"),
     btnNotifClearEl: byId<HTMLButtonElement>("btnNotifClear"),
@@ -221,20 +190,14 @@ export function renderShell(app: HTMLDivElement): NvrShell {
     liveViewEl: byId<HTMLElement>("liveView"),
     historyViewEl: byId<HTMLElement>("historyView"),
     settingsViewEl: byId<HTMLElement>("settingsView"),
-    summaryPanelEl: byId<HTMLElement>("summaryPanel"),
-    summaryGatewayEl: byId<HTMLSpanElement>("summaryGateway"),
-    summaryServiceEl: byId<HTMLSpanElement>("summaryService"),
-    summaryCamerasEl: byId<HTMLSpanElement>("summaryCameras"),
-    summaryStateEl: byId<HTMLSpanElement>("summaryState"),
-    gridHintEl: byId<HTMLParagraphElement>("gridHint"),
     cameraGridEl: byId<HTMLDivElement>("cameraGrid"),
-    btnReconnect: byId<HTMLButtonElement>("btnReconnect"),
     historyHintEl: byId<HTMLParagraphElement>("historyHint"),
     settingsTabButtons: Array.from(app.querySelectorAll<HTMLButtonElement>(".settingsTab")),
     nvrSettingsPanelEl: byId<HTMLElement>("settingsNvrPanel"),
     camerasPanelEl: byId<HTMLElement>("settingsCamerasPanel"),
     cameraListEl: byId<HTMLDivElement>("cameraList"),
     addCameraButtonEl: byId<HTMLButtonElement>("btnAddCamera"),
+    cameraRefreshStatusEl: byId<HTMLSpanElement>("cameraRefreshStatus"),
     logPanelEl: byId<HTMLElement>("logPanel"),
     logEl: byId<HTMLPreElement>("log"),
   };
