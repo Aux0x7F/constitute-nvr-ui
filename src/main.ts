@@ -461,6 +461,21 @@ function appendLog(message: string): void {
   }
 }
 
+function markStartupStage(stage: string): void {
+  const label = String(stage || "").trim();
+  if (!label) return;
+  try {
+    performance.mark(`constitute-nvr-ui:${label}`);
+  } catch {}
+  if (diagnosticsEnabled) {
+    try {
+      console.debug("[nvr-ui boot]", label, Math.round(performance.now()));
+    } catch {
+      console.debug("[nvr-ui boot]", label);
+    }
+  }
+}
+
 function addNotification(
   tone: NotificationTone,
   title: string,
@@ -2859,6 +2874,31 @@ function refreshRuntimeProjectionLabels(): void {
   popServicesEl.title = launchContext.servicePk;
 }
 
+function renderLaunchContextTiles(context: LaunchContext): boolean {
+  const requestedSources = normalizeSourceIds(context.display?.sources);
+  if (requestedSources.length === 0) {
+    cameraTiles.clear();
+    setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
+    setConnectionState("no cameras", "warn");
+    setDrawerStatus("No enabled camera sources were advertised by the NVR service.");
+    return false;
+  }
+
+  const currentSources = Array.from(cameraTiles.keys());
+  if (currentSources.join("\n") !== requestedSources.join("\n")) {
+    cameraGridEl.innerHTML = "";
+    cameraTiles.clear();
+  }
+  for (const sourceId of requestedSources) {
+    ensureCameraTile(sourceId);
+    updateLiveTileMetadata(sourceId);
+    setTileState(sourceId, "connecting", "Preparing live preview…");
+  }
+  setConnectionState("connecting", "warn");
+  setDrawerStatus("Connecting live preview in the background.");
+  return true;
+}
+
 async function loadLaunchContext(): Promise<LaunchContext> {
   const launchId = parseLaunchId();
   if (!launchId) throw launchError("launch_context", "launch id is missing from the URL");
@@ -2886,7 +2926,6 @@ function sourceIdForTrack(event: RTCTrackEvent): string {
 async function connectLiveGrid(context: LaunchContext): Promise<void> {
   const display = context.display || {};
   app.dataset.launchStage = "gateway_signal";
-  setBootSplash("Connecting");
   const requestedSources = normalizeSourceIds(display.sources);
   if (requestedSources.length === 0) {
     cancelScheduledReconnect();
@@ -2897,12 +2936,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     return;
   }
 
-  cameraGridEl.innerHTML = "";
-  cameraTiles.clear();
-  for (const sourceId of requestedSources) {
-    ensureCameraTile(sourceId);
-    setTileState(sourceId, "connecting", "Preparing WebRTC preview…");
-  }
+  renderLaunchContextTiles(context);
 
   setConnectionState("negotiating", "warn");
   setDrawerStatus("Negotiating live preview through the owned gateway.");
@@ -2918,6 +2952,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   peerConnection = connection;
   transceiverSourceIds = [...requestedSources];
   const localCandidates: RTCIceCandidateInit[] = [];
+  let firstTrackSeen = false;
 
   for (const sourceId of requestedSources) {
     connection.addTransceiver("video", { direction: "recvonly" });
@@ -2937,6 +2972,10 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     if (peerConnection !== connection) return;
     cancelScheduledReconnect();
     reconnectAttemptCount = 0;
+    if (!firstTrackSeen) {
+      firstTrackSeen = true;
+      markStartupStage("nvr.first-track");
+    }
     const sourceId = sourceIdForTrack(event);
     // Bind each preview tile to the specific remote video track instead of trusting
     // browser stream grouping. Multiple remote video tracks may share one MediaStream id.
@@ -2979,6 +3018,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
   await waitForIceGatheringComplete(connection);
 
   appendLog(`sending offer for ${requestedSources.length} source(s)`);
+  markStartupStage("nvr.offer-sent");
   const result = await requestGatewaySignal("offer", {
     description: localDescriptionPayload(connection),
     candidates: localCandidates,
@@ -3004,6 +3044,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     throw launchError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
   });
   appendLog("remote answer applied");
+  markStartupStage("nvr.answer-applied");
   if (!hasLiveTiles()) {
     setConnectionState("connecting", "warn");
     setDrawerStatus("Waiting for live media tracks.");
@@ -3052,12 +3093,29 @@ function scheduleAutomaticReconnect(reason: string): void {
 
 async function reconnect(): Promise<void> {
   cancelScheduledReconnect();
-  setBootSplash("Connecting");
   if (!launchContext) {
     launchContext = await loadLaunchContext();
   }
   refreshSummary(launchContext);
   await connectLiveGrid(launchContext);
+}
+
+function handleNonFatalLiveFailure(error: unknown): void {
+  const launchFailure = asManagedLaunchError(error, "webrtc_media");
+  console.error(launchFailure);
+  closePeerConnection();
+  app.dataset.launchStage = launchFailure.stage;
+  setConnectionState("unavailable", "bad");
+  setDrawerStatus(launchFailure.detail);
+  if (cameraTiles.size > 0) {
+    markAllTiles("unavailable", "Live preview unavailable.");
+  } else {
+    setGridEmpty("Live Preview Unavailable", launchFailure.detail);
+  }
+  addNotification("bad", "Live preview unavailable", launchFailure.detail, "app");
+  appendLog(`degraded [${launchFailure.stage}] ${launchFailure.detail}`);
+  void reportServiceStatus("degraded", launchFailure.detail, launchFailure.stage);
+  scheduleAutomaticReconnect(launchFailure.detail);
 }
 
 function closePeerConnection(): void {
@@ -3206,14 +3264,18 @@ async function bootstrap(): Promise<void> {
   setDrawerStatus("Preparing your Constitute NVR view.");
   app.dataset.launchStage = "launch_context";
   appendLog("bootstrapping managed NVR app surface");
+  markStartupStage("nvr.boot.start");
   void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "launch_context");
 
   launchContext = await loadLaunchContext();
   launchContext = await persistLaunchContext(launchContext);
-  setBootSplash("Connecting");
   appendLog(`launch context loaded for service ${pkLabel(launchContext.servicePk)}`);
+  markStartupStage("nvr.launch-context.loaded");
   refreshSummary(launchContext);
+  renderLaunchContextTiles(launchContext);
   syncUiToHash();
+  dismissBootSplash();
+  markStartupStage("nvr.first-paint");
   void fetchGrantInventory().catch(() => {});
   void refreshCameraInventory().catch((error) => {
     addNotification("warn", "Camera inventory unavailable", String((error as Error)?.message || error), "camera", {
@@ -3221,8 +3283,9 @@ async function bootstrap(): Promise<void> {
       settingsTab: "cameras",
     });
   });
-  await reconnect();
-  dismissBootSplash();
+  void reconnect().catch((error) => {
+    handleNonFatalLiveFailure(error);
+  });
 }
 
 void bootstrap().catch((error) => {

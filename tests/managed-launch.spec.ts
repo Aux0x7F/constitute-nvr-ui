@@ -50,6 +50,8 @@ type RuntimeMockConfig = {
   ownerInventory?: boolean;
   adminDelayMs?: number;
   applyDelayMs?: number;
+  offerDelayMs?: number;
+  failOfferCount?: number;
   sharedTrackStream?: boolean;
   staleMountedDisplayNameAfterApply?: boolean;
   cameraNetwork?: {
@@ -138,6 +140,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
     let sessionCloseCount = 0;
     let offerRequestCount = 0;
     let expiredOfferOnce = false;
+    let remainingOfferFailures = Math.max(0, Number(runtimeConfig.failOfferCount || 0));
     let adminRequestCount = 0;
     let failNextAdmin = false;
     const workerPorts = new Set<MockMessagePort>();
@@ -436,19 +439,32 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           }
           if (signalType === "offer") {
             offerRequestCount += 1;
-            this.emit(runtimeResponse(requestId, {
-              requestId: signalRequestId,
-              ok: true,
-              result: {
-                payload: {
-                  answer: {
-                    type: "answer",
-                    sdp: "v=0\r\ns=constitute-nvr-ui-test\r\n",
+            const respond = () => {
+              if (remainingOfferFailures > 0) {
+                remainingOfferFailures -= 1;
+                this.emit(runtimeError(requestId, "gateway signaling failed", "gateway.signal.request"));
+                return;
+              }
+              this.emit(runtimeResponse(requestId, {
+                requestId: signalRequestId,
+                ok: true,
+                result: {
+                  payload: {
+                    answer: {
+                      type: "answer",
+                      sdp: "v=0\r\ns=constitute-nvr-ui-test\r\n",
+                    },
+                    sources: context.display?.sources || [],
                   },
-                  sources: context.display?.sources || [],
                 },
-              },
-            }, "gateway.signal.request"));
+              }, "gateway.signal.request"));
+            };
+            const delayMs = Math.max(0, Number(runtimeConfig.offerDelayMs || 0));
+            if (delayMs > 0) {
+              window.setTimeout(respond, delayMs);
+            } else {
+              respond();
+            }
             return;
           }
           if (signalType === "admin") {
@@ -709,6 +725,48 @@ test("boots live preview without waiting for slow camera administration refresh"
 
   await expect(page.locator(".cameraTile")).toHaveCount(2);
   await expect(page.locator("#bootSplash")).toHaveCount(0);
+});
+
+test("dismisses the splash after launch context while gateway signaling is still pending", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    launchContext: buildLaunchContext(),
+    diagnostics: false,
+    expireOfferPreflight: false,
+    ownerInventory: false,
+    offerDelayMs: 15_000,
+  });
+
+  await page.goto("/#launch=launch-test-001");
+
+  await expect(page.locator(".cameraTile")).toHaveCount(2);
+  await expect(page.locator("#bootSplash")).toHaveCount(0);
+  await expect(page.locator(".cameraStatusDot-connecting")).toHaveCount(2);
+  await expect(page.locator(".cameraStatusDot-live")).toHaveCount(0);
+});
+
+test("keeps the page open when the first live reconnect attempt fails after launch context", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    launchContext: buildLaunchContext(),
+    diagnostics: false,
+    expireOfferPreflight: false,
+    ownerInventory: false,
+    failOfferCount: 1,
+  });
+
+  await page.goto("/#launch=launch-test-001");
+
+  await expect(page.locator("#bootSplash")).toHaveCount(0);
+  await expect(page.locator(".cameraTile")).toHaveCount(2);
+  await expect(page.locator("#liveView .emptyState strong")).toHaveCount(0);
+  await expect.poll(async () => {
+    return await page.evaluate(() => {
+      const probe = (window as Window & {
+        __runtimeProbe?: { offerRequestCount?: number };
+      }).__runtimeProbe;
+      return probe?.offerRequestCount ?? 0;
+    });
+  }).toBe(2);
+  await expect(page.locator(".cameraStatusDot-live")).toHaveCount(2);
 });
 
 test("reconnects live preview automatically after the peer connection drops", async ({ page }) => {
