@@ -467,7 +467,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                 this.emit(runtimeError(requestId, "inventory unavailable", "gateway.signal.request"));
                 return;
               }
-              if (adminAction === "apply_camera_config") {
+              if (adminAction === "apply_camera_device_config") {
                 const sourceId = String(adminPayload.sourceId || "").trim();
                 const desired = (adminPayload.desired && typeof adminPayload.desired === "object")
                   ? adminPayload.desired as Record<string, unknown>
@@ -489,7 +489,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                   ok: true,
                   result: {
                     payload: {
-                      action: "apply_camera_config",
+                      action: "apply_camera_device_config",
                       mounted: camera
                         ? {
                             sourceId: camera.sourceId,
@@ -541,7 +541,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                   payload: {
                     inventory: runtimeConfig.ownerInventory
                       ? {
-                          mounted: cameras.map((camera) => ({
+                          mountedDevices: cameras.map((camera) => ({
                             sourceId: camera.sourceId,
                             displayName: camera.name,
                             driverId: camera.driverId || "",
@@ -570,7 +570,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                               ptzCapable: camera.ptzCapable,
                             },
                           })),
-                          candidates: [],
+                          candidateDevices: [],
                           cameraNetwork: runtimeConfig.cameraNetwork || {
                             managed: true,
                             interface: "eth1",
@@ -586,15 +586,15 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                           },
                         }
                       : {
-                          mounted: [],
-                          candidates: [],
+                          mountedDevices: [],
+                          candidateDevices: [],
                           cameraNetwork: {},
                         },
                   },
                 },
               }, "gateway.signal.request"));
             };
-            const delayMs = adminAction === "apply_camera_config"
+            const delayMs = adminAction === "apply_camera_device_config"
               ? Math.max(0, Number(runtimeConfig.applyDelayMs ?? runtimeConfig.adminDelayMs ?? 0))
               : Math.max(0, Number(runtimeConfig.adminDelayMs || 0));
             if (delayMs > 0) {
