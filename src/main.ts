@@ -225,8 +225,8 @@ type CameraNetworkSummaryRecord = {
 };
 
 type CameraInventoryRecord = {
-  mounted: MountedCameraRecord[];
-  candidates: DiscoveryCandidateRecord[];
+  mountedDevices: MountedCameraRecord[];
+  candidateDevices: DiscoveryCandidateRecord[];
   cameraNetwork?: CameraNetworkSummaryRecord;
 };
 
@@ -1190,7 +1190,7 @@ async function requestAdminAction(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-  const timeoutMs = action === "apply_camera_config"
+  const timeoutMs = action === "apply_camera_device_config"
     ? CAMERA_APPLY_REQUEST_TIMEOUT_MS
     : ADMIN_SIGNAL_REQUEST_TIMEOUT_MS;
   try {
@@ -1348,7 +1348,7 @@ function candidateMountDraft(candidateId: string, candidate?: DiscoveryCandidate
 function updateCandidateMountDraft(candidateId: string, patch: Partial<CandidateMountDraft>): void {
   const key = String(candidateId || "").trim();
   if (!key) return;
-  const candidate = (cameraInventory?.candidates || []).find((item) => String(item.candidateId || "").trim() === key) || null;
+  const candidate = (cameraInventory?.candidateDevices || []).find((item) => String(item.candidateId || "").trim() === key) || null;
   candidateMountDrafts.set(key, {
     ...candidateMountDraft(key, candidate),
     ...patch,
@@ -1485,25 +1485,25 @@ function restoreCameraSettingsFocus(snapshot: CameraSettingsFocusSnapshot | null
 }
 
 function hasCameraInventoryData(): boolean {
-  return Boolean((cameraInventory?.mounted?.length || 0) > 0 || (cameraInventory?.candidates?.length || 0) > 0);
+  return Boolean((cameraInventory?.mountedDevices?.length || 0) > 0 || (cameraInventory?.candidateDevices?.length || 0) > 0);
 }
 
 function upsertMountedCameraInventoryRecord(record: MountedCameraRecord | null | undefined): void {
   const sourceId = String(record?.sourceId || "").trim();
   if (!sourceId || !cameraInventory) return;
-  const mounted = Array.isArray(cameraInventory.mounted) ? cameraInventory.mounted.slice() : [];
+  const mounted = Array.isArray(cameraInventory.mountedDevices) ? cameraInventory.mountedDevices.slice() : [];
   const index = mounted.findIndex((camera) => String(camera.sourceId || "").trim() === sourceId);
   if (index >= 0) mounted[index] = record as MountedCameraRecord;
   else mounted.push(record as MountedCameraRecord);
   cameraInventory = {
     ...cameraInventory,
-    mounted,
+    mountedDevices: mounted,
   };
 }
 
 function settingsCameraRows(): CameraGrantView[] {
-  if (cameraInventory?.mounted?.length) {
-    return cameraInventory.mounted.map((camera) => ({
+  if (cameraInventory?.mountedDevices?.length) {
+    return cameraInventory.mountedDevices.map((camera) => ({
       sourceId: String(camera.sourceId || "").trim(),
       name: cameraDisplayName(String(camera.sourceId || "").trim()),
       ptzCapable: camera.observed?.ptzCapable === true || camera.capabilities?.ptz === true,
@@ -1524,8 +1524,8 @@ function settingsCameraRows(): CameraGrantView[] {
 
 function mountedCameraRecord(sourceId: string): MountedCameraRecord | null {
   const target = String(sourceId || "").trim();
-  if (!target || !cameraInventory?.mounted?.length) return null;
-  return cameraInventory.mounted.find((camera) => String(camera.sourceId || "").trim() === target) || null;
+  if (!target || !cameraInventory?.mountedDevices?.length) return null;
+  return cameraInventory.mountedDevices.find((camera) => String(camera.sourceId || "").trim() === target) || null;
 }
 
 function serviceEnabled(value: unknown): boolean | null {
@@ -1569,19 +1569,19 @@ async function refreshCameraInventory(): Promise<void> {
     }
     renderNvrSettingsSummary();
     try {
-      const payload = await requestAdminAction("list_inventory");
+      const payload = await requestAdminAction("list_camera_device_inventory");
       const inventory = payload.inventory && typeof payload.inventory === "object"
         ? payload.inventory as CameraInventoryRecord
-        : { mounted: [], candidates: [], cameraNetwork: {} };
+        : { mountedDevices: [], candidateDevices: [], cameraNetwork: {} };
       cameraInventory = {
-        mounted: Array.isArray(inventory.mounted) ? inventory.mounted : [],
-        candidates: Array.isArray(inventory.candidates) ? inventory.candidates : [],
+        mountedDevices: Array.isArray(inventory.mountedDevices) ? inventory.mountedDevices : [],
+        candidateDevices: Array.isArray(inventory.candidateDevices) ? inventory.candidateDevices : [],
         cameraNetwork: inventory.cameraNetwork && typeof inventory.cameraNetwork === "object"
           ? inventory.cameraNetwork as CameraNetworkSummaryRecord
           : {},
       };
       seedCameraDraftsFromInventory();
-      for (const candidate of cameraInventory.candidates || []) {
+      for (const candidate of cameraInventory.candidateDevices || []) {
         const candidateId = String(candidate.candidateId || "").trim();
         if (!candidateId || knownCandidateIds.has(candidateId)) continue;
         knownCandidateIds.add(candidateId);
@@ -1601,7 +1601,7 @@ async function refreshCameraInventory(): Promise<void> {
         activity: "settings",
         settingsTab: "nvr",
       });
-      cameraInventory = previousInventory || { mounted: [], candidates: [], cameraNetwork: {} };
+      cameraInventory = previousInventory || { mountedDevices: [], candidateDevices: [], cameraNetwork: {} };
     } finally {
       cameraInventoryLoading = false;
       renderCameraRefreshStatus();
@@ -1622,7 +1622,7 @@ async function refreshCameraInventory(): Promise<void> {
 }
 
 function seedCameraDraftsFromInventory(): void {
-  for (const camera of cameraInventory?.mounted || []) {
+  for (const camera of cameraInventory?.mountedDevices || []) {
     const sourceId = String(camera.sourceId || "").trim();
     if (!sourceId) continue;
     const supportsOverlayText = camera.capabilities?.overlayText === true;
@@ -1673,7 +1673,7 @@ function seedCameraDraftsFromInventory(): void {
     }
     poseStatusBySourceId.set(sourceId, String(camera.poseStatus || camera.observed?.poseStatus || "").trim());
   }
-  for (const candidate of cameraInventory?.candidates || []) {
+  for (const candidate of cameraInventory?.candidateDevices || []) {
     const candidateId = String(candidate.candidateId || "").trim();
     if (!candidateId || candidateMountDrafts.has(candidateId)) continue;
     candidateMountDrafts.set(candidateId, defaultCandidateMountDraft(candidate));
@@ -1688,7 +1688,7 @@ async function saveCameraSettings(sourceId: string): Promise<void> {
   cameraApplyPending.add(key);
   updateCameraApplyUi(key);
   try {
-    const payload = await requestAdminAction("apply_camera_config", {
+    const payload = await requestAdminAction("apply_camera_device_config", {
       sourceId,
       desired: {
         displayName: draft.displayName,
@@ -1746,7 +1746,7 @@ async function saveCameraSettings(sourceId: string): Promise<void> {
 }
 
 async function mountCameraCandidate(candidateId: string): Promise<void> {
-  const candidate = (cameraInventory?.candidates || []).find((item) => String(item.candidateId || "").trim() === candidateId);
+  const candidate = (cameraInventory?.candidateDevices || []).find((item) => String(item.candidateId || "").trim() === candidateId);
   if (!candidate) {
     throw new Error("camera candidate is no longer available");
   }
@@ -1754,7 +1754,7 @@ async function mountCameraCandidate(candidateId: string): Promise<void> {
   if (!draft.username.trim() || !draft.password.trim()) {
     throw new Error("username and password are required to mount this camera");
   }
-  const payload = await requestAdminAction("mount_candidate", {
+  const payload = await requestAdminAction("mount_camera_device", {
     candidate,
     displayName: draft.displayName,
     username: draft.username,
@@ -1785,7 +1785,7 @@ async function mountCameraCandidate(candidateId: string): Promise<void> {
 }
 
 async function runMountedCameraProbe(sourceId: string): Promise<void> {
-  const payload = await requestAdminAction("probe_camera", { sourceId });
+  const payload = await requestAdminAction("probe_camera_device", { sourceId });
   const result = payload.result && typeof payload.result === "object" ? payload.result : payload;
   const mounted = (result as Record<string, unknown>)?.camera;
   const verification = mounted && typeof mounted === "object" && (mounted as Record<string, unknown>).verification
@@ -1810,12 +1810,12 @@ async function runMountedCameraProbe(sourceId: string): Promise<void> {
 }
 
 async function runCandidateProbe(candidateId: string): Promise<void> {
-  const candidate = (cameraInventory?.candidates || []).find((item) => String(item.candidateId || "").trim() === candidateId);
+  const candidate = (cameraInventory?.candidateDevices || []).find((item) => String(item.candidateId || "").trim() === candidateId);
   if (!candidate) {
     throw new Error("camera candidate is no longer available");
   }
   const draft = candidateMountDraft(candidateId, candidate);
-  const payload = await requestAdminAction("probe_camera", {
+  const payload = await requestAdminAction("probe_camera_device", {
     ip: candidate.ip,
     username: draft.username,
     password: draft.password,
@@ -2513,11 +2513,11 @@ function renderCameraList(): void {
     }
   }
 
-  if (viewerIsOwner() && cameraInventory?.candidates?.length) {
+  if (viewerIsOwner() && cameraInventory?.candidateDevices?.length) {
     const section = document.createElement("section");
     section.className = "nestedPanel";
     section.innerHTML = `<div class="summaryLabel">Discovery Candidates</div>`;
-    for (const candidate of cameraInventory.candidates) {
+    for (const candidate of cameraInventory.candidateDevices) {
       const candidateId = String(candidate.candidateId || "").trim();
       if (!candidateId) continue;
       const item = document.createElement("div");
