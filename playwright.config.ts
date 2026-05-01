@@ -10,7 +10,7 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4173",
+    command: "npx vite --force --host 127.0.0.1 --port 4173",
     port: 4173,
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,

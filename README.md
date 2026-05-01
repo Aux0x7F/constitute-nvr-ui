@@ -2,17 +2,17 @@
 
 `constitute-nvr-ui` is the browser app module for `constitute-nvr`.
 
-Current scope is managed-app MVP support:
+Current scope is the first-party Security Cameras surface:
 - load as a Pages-hosted app surface at `tld/constitute-nvr-ui/`
-- redeem short-lived launch context from shared runtime / `constitute`
+- redeem short-lived launch context from the shared runtime in `constitute-account`
 - establish gateway-mediated signaling/auth for `constitute-nvr`
-- render a simple live camera grid over WebRTC H.264 preview tracks
+- render live camera tiles over WebRTC H.264 preview tracks
 
 ## Security Position
 - UI does not receive executable code from NVR transport.
-- Identity/wallet ownership remains in `constitute` shell.
+- Identity/session/grant authority remains in `constitute-account`.
 - Managed launch must not require long-lived identity secrets in URL parameters.
-- Direct/manual debug mode may still use explicit operator-supplied secrets outside the canonical flow.
+- Manual protocol/debug helpers are not part of the canonical browser launch path.
 
 ## Run
 ```bash
@@ -26,18 +26,17 @@ npm run test:e2e
 - App manifest: `app.manifest.json`
 - Default manifest entry: `dist/index.html`
 - Build output is committed for static hosting under the site domain.
-- Local static monorepo hosting should serve the built surface at `/constitute-nvr-ui/dist/`.
+- Static hosting should serve the app at `/constitute-nvr-ui/` without exposing `/dist/` in the canonical URL.
 
 ## Managed Launch Bootstrap
 Canonical launch direction:
-- shell opens this app with a short-lived `launchId`
-- shared runtime exposes matching launch context, with local storage / legacy app-channel fallback where needed
+- direct app entry or another first-party surface opens this app with a short-lived `launchId`
+- shared runtime exposes matching launch context
 - app redeems that context and then negotiates signaling/auth through the owned gateway
+
+Shared first-party chrome comes from `constitute-ui`, including the footer account rail and mini account center entrypoint.
 
 Long-lived identity secrets should not be passed in query parameters.
 
-## Legacy Debug Mode
-Manual direct `/session` attachment remains available for lab work while the managed path is under active implementation.
-
 ## Status
-MVP/manual-test ready. Not production-ready.
+Ready for managed browser-surface convergence testing against the shared runtime and gateway-mediated launch path.

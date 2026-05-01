@@ -70,8 +70,8 @@ export function deriveSessionKey(
 function identitySecretBytes(config: ConnectionConfig): Uint8Array {
   const hex = String(config.identitySecretHex || "").trim();
   if (hex) return hexToBytes(hex);
-  if (config.allowUnsignedHelloMvp) return hexToBytes(ZERO_SECRET_HEX);
-  throw new Error("identity secret is required unless unsigned MVP mode is enabled");
+  if (config.allowUnsignedDebugHello) return hexToBytes(ZERO_SECRET_HEX);
+  throw new Error("identity secret is required unless unsigned local debug mode is enabled");
 }
 
 export function encryptCommand(

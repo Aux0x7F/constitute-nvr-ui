@@ -36,7 +36,7 @@ if (!entry?.file) {
   throw new Error("Could not resolve built NVR UI entry from Vite manifest.");
 }
 
-const sourceHtml = await readFile(resolve(workspaceRoot, "index.html"), "utf8");
+const sourceHtml = await readFile(resolve(workspaceRoot, "index.src.html"), "utf8");
 const cssLinks = Array.isArray(entry.css)
   ? entry.css.map((file) => `    <link rel="stylesheet" href="./${file}" />`).join("\n")
   : "";
