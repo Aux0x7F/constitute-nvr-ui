@@ -26,7 +26,7 @@ npm run test:e2e
 - App manifest: `app.manifest.json`
 - Default manifest entry: `dist/index.html`
 - Build output is committed for static hosting under the site domain.
-- Local static monorepo hosting should serve the app at `/constitute-nvr-ui/`; the local project-root server maps that route to this repo's built `dist/` output without exposing `/dist/` in the canonical URL.
+- Static hosting should serve the app at `/constitute-nvr-ui/` without exposing `/dist/` in the canonical URL.
 
 ## Managed Launch Bootstrap
 Canonical launch direction:
