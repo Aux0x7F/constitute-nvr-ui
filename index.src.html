@@ -54,22 +54,6 @@
         to { transform: translateY(-2px) scale(1.015); text-shadow: 0 10px 28px rgba(87, 209, 191, 0.18); }
       }
     </style>
-    <script>
-      (() => {
-        const host = String(window.location.hostname || "").toLowerCase();
-        const path = String(window.location.pathname || "");
-        const isLocal = host === "localhost" || host === "127.0.0.1";
-        const atRepoRoot = /\/constitute-nvr-ui\/?$/.test(path);
-        if (isLocal && atRepoRoot) {
-          const target = new URL("./dist/", window.location.href);
-          target.search = window.location.search;
-          target.hash = window.location.hash;
-          window.location.replace(target.toString());
-          return;
-        }
-        window.__CONSTITUTE_NVR_UI_DEV_ENTRY__ = "/src/main.ts";
-      })();
-    </script>
   </head>
   <body class="booting">
     <div id="bootSplash" aria-live="polite" role="status">
@@ -79,15 +63,6 @@
       </div>
     </div>
     <div id="app"></div>
-    <script>
-      (() => {
-        const entry = String(window.__CONSTITUTE_NVR_UI_DEV_ENTRY__ || "").trim();
-        if (!entry) return;
-        const script = document.createElement("script");
-        script.type = "module";
-        script.src = entry;
-        document.body.appendChild(script);
-      })();
-    </script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

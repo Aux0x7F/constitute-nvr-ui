@@ -1,4 +1,6 @@
+import "constitute-ui/styles.css";
 import "./styles.css";
+import { renderActionList, renderAccountCenterSummary, setConnectionStateText } from "constitute-ui";
 import { renderShell } from "./shell";
 
 type IceServerHints = {
@@ -298,6 +300,10 @@ type RuntimeSnapshot = {
   launchContextCount?: number;
 };
 
+type ManagedApplianceRecord = Record<string, unknown> & {
+  __scope?: string;
+};
+
 type CameraSettingsDraft = {
   displayName: string;
   overlayText: string;
@@ -326,15 +332,21 @@ const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
 const ADMIN_SIGNAL_REQUEST_TIMEOUT_MS = 135_000;
 const CAMERA_APPLY_REQUEST_TIMEOUT_MS = 135_000;
 const GRANT_REQUEST_TIMEOUT_MS = 30_000;
-const RUNTIME_WORKER_VERSION = Object.freeze({ major: 2, minor: 8 });
+const DIRECT_ENTRY_LAUNCH_REQUEST_TIMEOUT_MS = 135_000;
+const DIRECT_ENTRY_LAUNCH_RETRY_BASE_MS = 1_000;
+const DIRECT_ENTRY_LAUNCH_RETRY_MAX_MS = 10_000;
+const RUNTIME_WORKER_VERSION = Object.freeze({ major: 2, minor: 9 });
 const RUNTIME_WORKER_BUILD_ID = `runtime-${RUNTIME_WORKER_VERSION.major}.${RUNTIME_WORKER_VERSION.minor}`;
 const RUNTIME_ATTACH_TIMEOUT_MS = 5_000;
 const RUNTIME_WRITE_TIMEOUT_MS = 10_000;
+const DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS = 15_000;
+const DIRECT_ENTRY_ACCOUNT_HYDRATION_POLL_MS = 350;
+const DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS = 2_000;
 const LAUNCH_REFRESH_SKEW_MS = 15_000;
 const PTZ_STEP_DEGREES = 10;
 const PTZ_STEP_NORMALIZED = PTZ_STEP_DEGREES / 180;
-// Temporary kill-switch: hide PTZ UI until the Reolink path stops failing with
-// native absolute `405`/no-move plus CGI session exhaustion (`rspCode -5: max session`).
+// Keep PTZ hidden until the driver reports a verified control surface.
+// The current Reolink control path is not reliable enough to expose generically.
 const PTZ_UI_ENABLED = false;
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -347,12 +359,15 @@ const btnBellEl = shell.btnBellEl;
 const notifMenuEl = shell.notifMenuEl;
 const btnNotifClearEl = shell.btnNotifClearEl;
 const notifListEl = shell.notifListEl;
-const closeAppButtonEl = shell.closeAppButtonEl;
 const btnMenuEl = shell.btnMenuEl;
 const drawerEl = shell.drawerEl;
 const drawerBackdropEl = shell.drawerBackdropEl;
 const btnDrawerCloseEl = shell.btnDrawerCloseEl;
 const navButtons = shell.navButtons;
+const accountRailButtonEl = shell.accountRailButtonEl;
+const accountCenterMenuEl = shell.accountCenterMenuEl;
+const accountCenterSummaryEl = shell.accountCenterSummaryEl;
+const accountCenterActionsEl = shell.accountCenterActionsEl;
 const identityHandleEl = shell.identityHandleEl;
 const connWrapEl = shell.connWrapEl;
 const connStateTextEl = shell.connStateTextEl;
@@ -375,8 +390,6 @@ const camerasPanelEl = shell.camerasPanelEl;
 const cameraListEl = shell.cameraListEl;
 const addCameraButtonEl = shell.addCameraButtonEl;
 const cameraRefreshStatusEl = shell.cameraRefreshStatusEl;
-const logPanelEl = shell.logPanelEl;
-const logEl = shell.logEl;
 const nvrSettingsSummaryEl = document.getElementById("nvrSettingsSummary") as HTMLDivElement | null;
 
 const cameraTiles = new Map<string, CameraTile>();
@@ -391,7 +404,6 @@ let resolveRuntimeReady: ((value: MessagePort | null) => void) | null = null;
 let launchContext: LaunchContext | null = null;
 let peerConnection: RTCPeerConnection | null = null;
 let transceiverSourceIds: string[] = [];
-const logLines: string[] = [];
 let diagnosticsEnabled = false;
 let bootSplashDismissed = false;
 let grantInventory: GrantInventory | null = null;
@@ -417,11 +429,14 @@ let cameraInventoryError = "";
 let cameraInventoryRefreshPromise: Promise<void> | null = null;
 let expandedCandidateId = "";
 let notificationMenuOpen = false;
-let identityHandleCopied = false;
+let accountCenterOpen = false;
 let launchRefreshPromise: Promise<LaunchContext> | null = null;
 let scheduledReconnectTimer = 0;
 let reconnectInFlight: Promise<void> | null = null;
 let reconnectAttemptCount = 0;
+let accountBridgeFrame: HTMLIFrameElement | null = null;
+let accountBridgePromise: Promise<void> | null = null;
+let directEntryLaunchAttempted = false;
 
 function ptzUiCapable(camera: LaunchCameraDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true;
@@ -453,10 +468,7 @@ function asManagedLaunchError(error: unknown, fallbackStage: LaunchStage): Manag
 }
 
 function appendLog(message: string): void {
-  const line = `[${new Date().toLocaleTimeString()}] ${message}`;
-  logLines.push(line);
   if (diagnosticsEnabled) {
-    renderLogBuffer();
     console.info(`[nvr-ui] ${message}`);
   }
 }
@@ -540,11 +552,13 @@ function connectionTextClass(tone: "neutral" | "warn" | "good" | "bad"): string 
 }
 
 function setConnectionState(label: string, tone: "neutral" | "warn" | "good" | "bad"): void {
-  connStateTextEl.textContent = label;
-  connStateTextEl.classList.remove("connStateText-connected", "connStateText-limited", "connStateText-error");
-  connStateTextEl.classList.add(connectionTextClass(tone));
+  setConnectionStateText(connStateTextEl, {
+    label,
+    toneClass: connectionTextClass(tone),
+  });
   popConnectionEl.textContent = label.toLowerCase();
   popRelayEl.textContent = label.toLowerCase();
+  renderAccountCenter();
 }
 
 function setDrawerStatus(detail: string): void {
@@ -562,12 +576,6 @@ function rememberResolvedResourceName(pk: unknown, label: unknown): void {
   const text = String(label || "").trim();
   if (!key || !text) return;
   resolvedResourceNames.set(key, text);
-}
-
-function resetIdentityHandleCopyHint(): void {
-  if (!identityHandleCopied) return;
-  identityHandleCopied = false;
-  refreshIdentityHandle();
 }
 
 function absorbRuntimeSnapshot(snapshot: unknown): void {
@@ -717,17 +725,8 @@ function persistDiagnosticsPreference(enabled: boolean): void {
   } catch {}
 }
 
-function renderLogBuffer(): void {
-  logEl.textContent = logLines.join("\n");
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
 function applyDiagnosticsMode(): void {
   diagnosticsEnabled = readDiagnosticsPreference();
-  logPanelEl.classList.toggle("diagnostics-hidden", !diagnosticsEnabled);
-  if (diagnosticsEnabled) {
-    renderLogBuffer();
-  }
 }
 
 function installDiagnosticsBridge(): void {
@@ -757,7 +756,7 @@ function installDiagnosticsBridge(): void {
 }
 
 function shellBaseUrl(): string {
-  return new URL("/constitute/", window.location.origin).toString();
+  return new URL("/constitute-account/", window.location.origin).toString();
 }
 
 function setBootSplash(title: string): void {
@@ -775,18 +774,6 @@ function dismissBootSplash(): void {
       bootSplashEl.remove();
     } catch {}
   }, 220);
-}
-
-function hasShellOpener(): boolean {
-  try {
-    return Boolean(window.opener && !window.opener.closed);
-  } catch {
-    return false;
-  }
-}
-
-function updateCloseAppButton(): void {
-  closeAppButtonEl.hidden = !hasShellOpener();
 }
 
 function openNotificationMenu(): void {
@@ -812,8 +799,16 @@ function toggleNotificationMenu(): void {
 function identityHandleForContext(context: LaunchContext | null): string {
   const identityId = String(context?.identityId || "").trim();
   if (!identityId) return "@unlinked";
-  const label = resolvedResourceName(identityId, shortPk(identityId));
-  return `@${String(label || "identity").replace(/^@+/, "")}`;
+  const runtimeHandle = runtimeIdentityHandle();
+  if (runtimeHandle !== "@linked") return runtimeHandle;
+  const label = String(resolvedResourceNames.get(identityId) || "").trim().replace(/^@+/, "");
+  return label ? `@${label}` : runtimeHandle;
+}
+
+function runtimeIdentityHandle(): string {
+  const rawLabel = String(runtimeSnapshot?.shell?.identity?.label || "").trim().replace(/^@+/, "");
+  if (rawLabel) return `@${rawLabel}`;
+  return "@linked";
 }
 
 function refreshIdentityHandle(): void {
@@ -822,30 +817,72 @@ function refreshIdentityHandle(): void {
   identityHandleEl.textContent = identityHandleForContext(launchContext);
   identityHandleEl.classList.toggle("identityHandle-linked", linked);
   identityHandleEl.classList.toggle("identityHandle-unlinked", !linked);
-  identityHandleEl.title = identityId
-    ? (identityHandleCopied ? "Copied!" : "Click to copy ID")
-    : "Identity not linked yet";
+  identityHandleEl.title = linked ? "Open account center" : "Open account center";
   identityHandleEl.setAttribute("aria-label", identityId ? `Identity ${identityId}` : "Identity not linked");
+  renderAccountCenter();
 }
 
-async function focusShellAndClose(): Promise<void> {
-  let openerFocused = false;
-  try {
-    if (window.opener && !window.opener.closed) {
-      window.opener.focus();
-      openerFocused = true;
-    }
-  } catch {}
+function openAccountCenter(): void {
+  accountCenterOpen = true;
+  accountCenterMenuEl.classList.remove("hidden");
+  accountRailButtonEl.setAttribute("aria-expanded", "true");
+}
 
-  try {
-    window.close();
-  } catch {}
+function closeAccountCenter(): void {
+  accountCenterOpen = false;
+  accountCenterMenuEl.classList.add("hidden");
+  accountRailButtonEl.setAttribute("aria-expanded", "false");
+}
 
-  window.setTimeout(() => {
-    if (window.closed) return;
-    if (openerFocused) return;
-    closeAppButtonEl.hidden = true;
-  }, 150);
+function toggleAccountCenter(): void {
+  if (accountCenterOpen) {
+    closeAccountCenter();
+  } else {
+    openAccountCenter();
+  }
+}
+
+function openAccountCenterApp(targetHash = ""): void {
+  const url = new URL("/constitute-account/", window.location.origin);
+  if (targetHash) url.hash = targetHash;
+  window.location.assign(url.toString());
+}
+
+function renderAccountCenter(): void {
+  const identityId = String(launchContext?.identityId || "").trim();
+  const handle = identityHandleForContext(launchContext);
+  const connection = String(connStateTextEl.textContent || "Offline").trim() || "Offline";
+  renderAccountCenterSummary(accountCenterSummaryEl, {
+    handle,
+    linked: Boolean(identityId),
+    connectionLabel: connection,
+    connectionToneClass: Array.from(connStateTextEl.classList)
+      .find((value) => value.startsWith("connStateText-") && value !== "connStateText")
+      || "connStateText-offline",
+  });
+  renderActionList(accountCenterActionsEl, [
+    {
+      id: "account.open_center",
+      label: "Open Account Center",
+      description: "Open constitute-account.",
+      onSelect: () => openAccountCenterApp("activity=home"),
+    },
+    {
+      id: "account.copy_identity",
+      label: "Copy Identity ID",
+      description: identityId ? "Copy the linked identity id." : "Identity is not linked yet.",
+      disabled: !identityId,
+      onSelect: async () => {
+        if (!identityId) return;
+        try {
+          await navigator.clipboard.writeText(identityId);
+          addNotification("good", "Identity copied", "Copied the linked identity id.", "account");
+        } catch (error) {
+          addNotification("bad", "Identity copy failed", String((error as Error)?.message || error), "account");
+        }
+      },
+    },
+  ]);
 }
 
 function openDrawer(): void {
@@ -907,9 +944,58 @@ function closeCameraSettings(): void {
 }
 
 function runtimeWorkerUrl(): string {
-  const target = new URL("/constitute/runtime.worker.js", window.location.origin);
+  const target = new URL("/constitute-account/runtime.worker.js", window.location.origin);
   target.searchParams.set("v", RUNTIME_WORKER_BUILD_ID);
   return target.toString();
+}
+
+function accountBridgeUrl(): string {
+  const target = new URL("/constitute-account/", window.location.origin);
+  target.searchParams.set("bridge", "1");
+  return target.toString();
+}
+
+function isRuntimeBrokerUnavailable(error: unknown): boolean {
+  const message = String((error as Error)?.message || error || "").toLowerCase();
+  return message.includes("runtime broker unavailable") || message.includes("runtime broker missing");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function ensureAccountBridge(reason = ""): Promise<void> {
+  if (accountBridgePromise) return await accountBridgePromise;
+  accountBridgePromise = new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    accountBridgeFrame = document.getElementById("constituteAccountBridge") as HTMLIFrameElement | null;
+    if (!accountBridgeFrame) {
+      const iframe = document.createElement("iframe");
+      iframe.id = "constituteAccountBridge";
+      iframe.hidden = true;
+      iframe.tabIndex = -1;
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.style.cssText = "position:absolute;width:0;height:0;border:0;opacity:0;pointer-events:none";
+      iframe.src = accountBridgeUrl();
+      iframe.addEventListener("load", () => window.setTimeout(done, 450), { once: true });
+      document.body.appendChild(iframe);
+      accountBridgeFrame = iframe;
+    } else {
+      window.setTimeout(done, 450);
+    }
+    window.setTimeout(done, 1_500);
+    if (reason) appendLog(`opened account bridge (${reason})`);
+  });
+  try {
+    await accountBridgePromise;
+  } finally {
+    accountBridgePromise = null;
+  }
 }
 
 function handleRuntimeMessage(message: unknown): void {
@@ -1007,6 +1093,22 @@ async function runtimeCall<T = unknown>(type: string, payload: Record<string, un
   return await promise;
 }
 
+async function runtimeBrokerCall<T = unknown>(
+  type: string,
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+  reason = "",
+): Promise<T> {
+  try {
+    return await runtimeCall<T>(type, payload, timeoutMs);
+  } catch (error) {
+    if (!isRuntimeBrokerUnavailable(error)) throw error;
+    appendLog(`runtime broker unavailable${reason ? ` during ${reason}` : ""}; booting account bridge`);
+    await ensureAccountBridge(reason || type);
+    return await runtimeCall<T>(type, payload, timeoutMs);
+  }
+}
+
 async function reportServiceStatus(state: string, reason: string, stage: LaunchStage | "" = ""): Promise<void> {
   try {
     await runtimeCall("runtime.status.put", {
@@ -1025,6 +1127,146 @@ async function reportServiceStatus(state: string, reason: string, stage: LaunchS
 
 async function requestLaunchContextFromRuntime(launchId: string): Promise<LaunchContext | null> {
   return await runtimeCall<LaunchContext | null>("launchContext.get", { launchId }, LAUNCH_REQUEST_TIMEOUT_MS);
+}
+
+function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
+  const shell = snapshot?.shell && typeof snapshot.shell === "object"
+    ? snapshot.shell as Record<string, unknown>
+    : null;
+  const identity = shell?.identity && typeof shell.identity === "object"
+    ? shell.identity as Record<string, unknown>
+    : null;
+  return identity?.linked === false;
+}
+
+function accountRuntimeIdentityResolved(snapshot: RuntimeSnapshot | null): boolean {
+  const shell = snapshot?.shell && typeof snapshot.shell === "object"
+    ? snapshot.shell as Record<string, unknown>
+    : null;
+  const identity = shell?.identity && typeof shell.identity === "object"
+    ? shell.identity as Record<string, unknown>
+    : null;
+  return typeof identity?.linked === "boolean";
+}
+
+async function waitForDirectEntryNvrLaunchRecord(): Promise<{
+  snapshot: RuntimeSnapshot | null;
+  record: ManagedApplianceRecord | null;
+}> {
+  await ensureAccountBridge("direct app entry");
+  let snapshot = await currentRuntimeSnapshot();
+  let record = directEntryNvrLaunchRecord(snapshot);
+  if (record) return { snapshot, record };
+
+  const deadline = Date.now() + DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS;
+  let identityResolvedAt = 0;
+  while (Date.now() < deadline) {
+    snapshot = await currentRuntimeSnapshot();
+    record = directEntryNvrLaunchRecord(snapshot);
+    if (record) return { snapshot, record };
+    if (accountRuntimeIdentityResolved(snapshot)) {
+      identityResolvedAt ||= Date.now();
+      if (Date.now() - identityResolvedAt >= DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS) {
+        return { snapshot, record: null };
+      }
+    }
+    await delay(DIRECT_ENTRY_ACCOUNT_HYDRATION_POLL_MS);
+  }
+
+  return { snapshot, record: null };
+}
+
+async function requestDirectEntryLaunchContext(): Promise<LaunchContext> {
+  directEntryLaunchAttempted = true;
+  setConnectionState("launching", "warn");
+  setDrawerStatus("Launching Security Cameras through your account runtime.");
+  setGridEmpty("Launching Security Cameras", "Resolving an account-authorized camera session through the gateway.");
+  dismissBootSplash();
+  void reportServiceStatus("launching", "Resolving an account-authorized camera session.", "launch_authorization");
+
+  const { snapshot, record } = await waitForDirectEntryNvrLaunchRecord();
+  if (!record) {
+    if (accountRuntimeNeedsIdentity(snapshot)) {
+      throw launchError(
+        "launch_context",
+        "link an identity before opening Security Cameras",
+      );
+    }
+    throw launchError(
+      "launch_context",
+      "no Security Cameras service is available from this account runtime",
+    );
+  }
+
+  let selectedRecord = record;
+  let selectedSnapshot = snapshot;
+  let result: Record<string, unknown> | null = null;
+  let attempt = 0;
+  while (!result) {
+    attempt += 1;
+    try {
+      result = await runtimeBrokerCall<Record<string, unknown>>("gateway.launch.request", {
+        payload: {
+          record: selectedRecord,
+          options: {
+            service: "nvr",
+            capability: "nvr.view",
+          },
+        },
+      }, DIRECT_ENTRY_LAUNCH_REQUEST_TIMEOUT_MS, "direct app launch");
+    } catch (error) {
+      const message = String((error as Error)?.message || error || "Security Cameras launch failed");
+      const lowerMessage = message.toLowerCase();
+      if (lowerMessage.includes("link an identity") || lowerMessage.includes("identity is not linked")) {
+        throw launchError("launch_context", "link an identity before opening Security Cameras");
+      }
+      appendLog(`direct launch attempt ${attempt} deferred: ${message}`);
+      setConnectionState("launching", "warn");
+      setDrawerStatus("Security Cameras launch is still resolving through the gateway.");
+      setGridEmpty("Launching Security Cameras", "Resolving an account-authorized camera session through the gateway.");
+      void reportServiceStatus("launching", message, "launch_authorization");
+
+      const refreshedSnapshot = await currentRuntimeSnapshot().catch(() => null);
+      const refreshedRecord = directEntryNvrLaunchRecord(refreshedSnapshot);
+      if (refreshedRecord) {
+        selectedRecord = refreshedRecord;
+        selectedSnapshot = refreshedSnapshot;
+      }
+      const retryDelayMs = Math.min(
+        DIRECT_ENTRY_LAUNCH_RETRY_MAX_MS,
+        DIRECT_ENTRY_LAUNCH_RETRY_BASE_MS * Math.max(1, attempt),
+      );
+      await delay(retryDelayMs);
+    }
+  }
+  const launch = normalizeGatewayLaunchResult(result);
+  if (!launch.launchToken) {
+    throw launchError("launch_authorization", "Security Cameras launch returned no launch token");
+  }
+
+  const servicePk = String(launch.servicePk || applianceDevicePk(record)).trim();
+  const gatewayPk = String(launch.gatewayPk || applianceGatewayPk(record)).trim();
+  if (!servicePk || !gatewayPk) {
+    throw launchError("launch_authorization", "Security Cameras launch did not include service and gateway identity");
+  }
+
+  const identity = selectedSnapshot?.shell && typeof selectedSnapshot.shell === "object"
+    ? selectedSnapshot.shell.identity as Record<string, unknown> | undefined
+    : undefined;
+  return {
+    launchId: randomOpaqueId("launch"),
+    app: "nvr",
+    repo: "constitute-nvr-ui",
+    identityId: String(identity?.identityId || "").trim(),
+    devicePk: servicePk,
+    gatewayPk,
+    servicePk,
+    service: launch.service || "nvr",
+    launchToken: launch.launchToken,
+    display: launch.display ?? {},
+    createdAt: Date.now(),
+    expiresAt: Number(launch.expiresAt || (Date.now() + (2 * 60_000))),
+  };
 }
 
 function normalizeGatewayLaunchResult(result: unknown, fallbackRequestId = ""): GatewayLaunchResult {
@@ -1084,12 +1326,12 @@ function isExpiredLaunchTokenError(error: unknown): boolean {
 
 async function requestGatewayLaunch(): Promise<GatewayLaunchResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
-  const result = await runtimeCall<Record<string, unknown>>("gateway.launch.request", {
+  const result = await runtimeBrokerCall<Record<string, unknown>>("gateway.launch.request", {
     payload: {
       record: launchRefreshRecord(launchContext),
       options: launchRefreshOptions(launchContext),
     },
-  }, LAUNCH_REFRESH_TIMEOUT_MS);
+  }, LAUNCH_REFRESH_TIMEOUT_MS, "launch refresh");
   appendLog("runtime broker delivered launch refresh");
   return normalizeGatewayLaunchResult(result);
 }
@@ -1139,7 +1381,7 @@ async function requestGatewaySignalOnce(
 ): Promise<GatewaySignalResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
   const requestId = randomOpaqueId("nvr-signal");
-  const runtimeResult = await runtimeCall<GatewaySignalResult>("gateway.signal.request", {
+  const runtimeResult = await runtimeBrokerCall<GatewaySignalResult>("gateway.signal.request", {
     payload: {
       requestId,
       gatewayPk: launchContext.gatewayPk,
@@ -1149,7 +1391,7 @@ async function requestGatewaySignalOnce(
       signalType,
       payload,
     },
-  }, timeoutMs);
+  }, timeoutMs, signalType);
   appendLog(`runtime broker delivered ${signalType} response`);
   return runtimeResult;
 }
@@ -1179,7 +1421,7 @@ async function requestGatewayGrantAction(
 ): Promise<GatewayGrantResult> {
   if (!launchContext) throw new Error("launch context is not loaded");
   const requestId = randomOpaqueId("nvr-grant");
-  return await runtimeCall<GatewayGrantResult>("gateway.grant.request", {
+  return await runtimeBrokerCall<GatewayGrantResult>("gateway.grant.request", {
     payload: {
       requestId,
       gatewayPk: launchContext.gatewayPk,
@@ -1188,7 +1430,7 @@ async function requestGatewayGrantAction(
       action,
       ...payload,
     },
-  }, GRANT_REQUEST_TIMEOUT_MS);
+  }, GRANT_REQUEST_TIMEOUT_MS, action);
 }
 
 function unwrapGatewaySignalPayload(result: GatewaySignalResult): Record<string, unknown> {
@@ -1227,6 +1469,110 @@ function normalizeSourceIds(value: unknown): string[] {
     if (next && !out.includes(next)) out.push(next);
   }
   return out;
+}
+
+function normalizeRecords(value: unknown): ManagedApplianceRecord[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is ManagedApplianceRecord => Boolean(entry) && typeof entry === "object")
+    : [];
+}
+
+function normalizeRole(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function snapshotManagedApplianceRecords(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord[] {
+  const managed = snapshot?.managedAppliances || {};
+  const buckets = [
+    { scope: "owned", items: normalizeRecords(managed.owned) },
+    { scope: "shared", items: normalizeRecords(managed.granted) },
+    { scope: "discoverable", items: normalizeRecords(managed.discoverable) },
+  ];
+  const out: ManagedApplianceRecord[] = [];
+  const seen = new Set<string>();
+  for (const bucket of buckets) {
+    for (const raw of bucket.items) {
+      const key = `${bucket.scope}:${String(raw.devicePk || raw.pk || raw.hostGatewayPk || raw.service || "").trim()}`;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...raw, __scope: bucket.scope });
+    }
+  }
+  return out;
+}
+
+function isGatewayApplianceRecord(record: ManagedApplianceRecord): boolean {
+  const role = normalizeRole(record.role || record.type || "");
+  const service = normalizeRole(record.service || "");
+  return role === "gateway" || service === "gateway";
+}
+
+function isNvrApplianceRecord(record: ManagedApplianceRecord): boolean {
+  if (isGatewayApplianceRecord(record)) return false;
+  const role = normalizeRole(record.role || record.type || "");
+  const service = normalizeRole(record.service || "");
+  return role === "nvr" || service === "nvr";
+}
+
+function applianceDevicePk(record: ManagedApplianceRecord): string {
+  return String(record.devicePk || record.device_pk || record.pk || "").trim();
+}
+
+function applianceGatewayPk(record: ManagedApplianceRecord): string {
+  return String(record.hostGatewayPk || record.host_gateway_pk || "").trim();
+}
+
+function applianceUpdatedAt(record: ManagedApplianceRecord): number {
+  return Number(
+    record.managedAvailabilityUpdatedAt
+      || record.managed_availability_updated_at
+      || record.updatedAt
+      || record.updated_at
+      || record.ts
+      || 0,
+  );
+}
+
+function directEntryNvrRecordFromGateway(gateway: ManagedApplianceRecord): ManagedApplianceRecord | null {
+  const gatewayPk = applianceDevicePk(gateway);
+  if (!gatewayPk) return null;
+  const hosted = normalizeRecords(gateway.hostedServices || gateway.hosted_services)
+    .find((service) => normalizeRole(service.service || service.slug || service.name || service) === "nvr");
+  if (!hosted) return null;
+  const servicePk = applianceDevicePk(hosted);
+  if (!servicePk) return null;
+  return {
+    ...hosted,
+    devicePk: servicePk,
+    pk: servicePk,
+    deviceKind: String(hosted.deviceKind || hosted.device_kind || "service"),
+    role: "nvr",
+    service: "nvr",
+    hostGatewayPk: gatewayPk,
+    serviceVersion: String(hosted.serviceVersion || hosted.service_version || ""),
+    updatedAt: Number(hosted.updatedAt || hosted.updated_at || gateway.updatedAt || gateway.updated_at || Date.now()),
+  };
+}
+
+function directEntryNvrLaunchRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
+  const records = snapshotManagedApplianceRecords(snapshot);
+  const services = records
+    .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
+    .sort((left, right) => applianceUpdatedAt(right) - applianceUpdatedAt(left));
+  if (services[0]) return services[0];
+  for (const gateway of records.filter(isGatewayApplianceRecord)) {
+    const hosted = directEntryNvrRecordFromGateway(gateway);
+    if (hosted) return hosted;
+  }
+  return null;
+}
+
+async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
+  try {
+    const snapshot = await runtimeCall<RuntimeSnapshot>("runtime.snapshot.get", {}, RUNTIME_WRITE_TIMEOUT_MS);
+    absorbRuntimeSnapshot(snapshot);
+  } catch {}
+  return runtimeSnapshot;
 }
 
 function buildRtcIceServers(hints: IceServerHints | undefined): RTCIceServer[] {
@@ -2352,6 +2698,43 @@ function formatPose(pose: CameraPoseView | null | undefined, status = ""): strin
   return `pan ${pan} • tilt ${tilt}${suffix}`;
 }
 
+function renderCameraNetworkSummary(network: CameraNetworkSummaryRecord): string {
+  const hasNetworkProjection = Boolean(
+    String(network.interface || "").trim() ||
+    String(network.subnetCidr || "").trim() ||
+    String(network.hostIp || "").trim() ||
+    String(network.dnsServer || "").trim() ||
+    String(network.ntpServer || "").trim() ||
+    typeof network.managed === "boolean" ||
+    typeof network.dhcpEnabled === "boolean" ||
+    typeof network.ntpEnabled === "boolean" ||
+    String(network.timezone || "").trim(),
+  );
+
+  if (cameraInventoryLoading && !hasNetworkProjection) {
+    return `<p class="panelHint">Loading camera network…</p>`;
+  }
+  if (!hasNetworkProjection) {
+    const detail = cameraInventoryError
+      ? escapeHtml(cameraInventoryError)
+      : "Camera network details will appear after gateway inventory resolves.";
+    const toneClass = cameraInventoryError ? "warnText" : "";
+    return `<p class="panelHint ${toneClass}">${detail}</p>`;
+  }
+
+  return `
+    ${renderKvRow("Managed", network.managed ? "yes" : "no")}
+    ${renderKvRow("Interface", String(network.interface || "not configured"))}
+    ${renderKvRow("Subnet", String(network.subnetCidr || "not configured"))}
+    ${renderKvRow("Host IP", String(network.hostIp || "not configured"))}
+    ${renderKvRow("DHCP", network.dhcpEnabled ? `${String(network.dhcpRangeStart || "—")} → ${String(network.dhcpRangeEnd || "—")}` : "disabled")}
+    ${renderKvRow("NTP", network.ntpEnabled ? String(network.ntpServer || "enabled") : "disabled")}
+    ${renderKvRow("Timezone", String(network.timezone || "UTC"))}
+    ${renderKvRow("DNS", String(network.dnsServer || "not configured"))}
+    ${cameraInventoryError ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError)}</p>` : ""}
+  `;
+}
+
 function renderNvrSettingsSummary(): void {
   if (!nvrSettingsSummaryEl || !launchContext) return;
   const display = launchContext.display || {};
@@ -2379,15 +2762,7 @@ function renderNvrSettingsSummary(): void {
       viewerIsOwner()
         ? `<section class="nestedPanel">
       <div class="summaryLabel">Camera Network</div>
-      ${renderKvRow("Managed", network.managed ? "yes" : "no")}
-      ${renderKvRow("Interface", String(network.interface || "not configured"))}
-      ${renderKvRow("Subnet", String(network.subnetCidr || "not configured"))}
-      ${renderKvRow("Host IP", String(network.hostIp || "not configured"))}
-      ${renderKvRow("DHCP", network.dhcpEnabled ? `${String(network.dhcpRangeStart || "—")} → ${String(network.dhcpRangeEnd || "—")}` : "disabled")}
-      ${renderKvRow("NTP", network.ntpEnabled ? String(network.ntpServer || "enabled") : "disabled")}
-      ${renderKvRow("Timezone", String(network.timezone || "UTC"))}
-      ${renderKvRow("DNS", String(network.dnsServer || "not configured"))}
-      ${cameraInventoryError ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError)}</p>` : ""}
+      ${renderCameraNetworkSummary(network)}
     </section>`
         : ""
     }
@@ -2872,6 +3247,7 @@ function refreshRuntimeProjectionLabels(): void {
   const cameraCount = cameraCountForContext(launchContext);
   popServicesEl.textContent = `${serviceLabelForContext(launchContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
   popServicesEl.title = launchContext.servicePk;
+  refreshIdentityHandle();
 }
 
 function renderLaunchContextTiles(context: LaunchContext): boolean {
@@ -2901,7 +3277,7 @@ function renderLaunchContextTiles(context: LaunchContext): boolean {
 
 async function loadLaunchContext(): Promise<LaunchContext> {
   const launchId = parseLaunchId();
-  if (!launchId) throw launchError("launch_context", "launch id is missing from the URL");
+  if (!launchId) return await requestDirectEntryLaunchContext();
 
   let fromRuntime: LaunchContext | null = null;
   try {
@@ -2910,7 +3286,19 @@ async function loadLaunchContext(): Promise<LaunchContext> {
     throw launchError("launch_context", String((error as Error)?.message || error || "runtime launch context request failed"));
   }
   if (fromRuntime) return fromRuntime;
-  throw launchError("launch_context", "launch context is unavailable in the shared runtime; reopen this app from Constitute");
+  throw launchError("launch_context", "launch context is unavailable in the shared runtime");
+}
+
+function isDirectEntryIdleLaunchFailure(error: ManagedLaunchError): boolean {
+  if (!directEntryLaunchAttempted) return false;
+  const detail = String(error.detail || "").toLowerCase();
+  return detail.includes("no security cameras service is available")
+    || detail.includes("launch context is unavailable")
+    || detail.includes("shared browser runtime unavailable")
+    || detail.includes("runtime broker unavailable")
+    || detail.includes("runtime broker missing")
+    || detail.includes("link an identity")
+    || detail.includes("device key is not ready");
 }
 
 function sourceIdForTrack(event: RTCTrackEvent): string {
@@ -3158,10 +3546,6 @@ function bindUi(): void {
     renderNotifications();
   });
 
-  closeAppButtonEl.addEventListener("click", () => {
-    void focusShellAndClose();
-  });
-
   btnMenuEl.addEventListener("click", openDrawer);
   btnDrawerCloseEl.addEventListener("click", closeDrawer);
   drawerBackdropEl.addEventListener("click", closeDrawer);
@@ -3169,20 +3553,17 @@ function bindUi(): void {
     if (notificationMenuOpen && !notifMenuEl.contains(event.target as Node) && !btnBellEl.contains(event.target as Node)) {
       closeNotificationMenu();
     }
+    if (accountCenterOpen && !accountCenterMenuEl.contains(event.target as Node) && !accountRailButtonEl.contains(event.target as Node)) {
+      closeAccountCenter();
+    }
   });
 
   connWrapEl.addEventListener("mouseenter", () => connPopoverEl.classList.remove("hidden"));
   connWrapEl.addEventListener("mouseleave", () => connPopoverEl.classList.add("hidden"));
-  identityHandleEl.addEventListener("click", async () => {
-    const identityId = String(launchContext?.identityId || "").trim();
-    if (!identityId) return;
-    try {
-      await navigator.clipboard.writeText(identityId);
-      identityHandleCopied = true;
-      refreshIdentityHandle();
-    } catch {}
+  accountRailButtonEl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAccountCenter();
   });
-  identityHandleEl.addEventListener("mouseleave", resetIdentityHandleCopyHint);
 
   navButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -3250,10 +3631,10 @@ window.addEventListener("beforeunload", () => {
 
 installDiagnosticsBridge();
 applyDiagnosticsMode();
-updateCloseAppButton();
 bindUi();
 renderCameraRefreshStatus();
-setDrawerStatus("Waiting for managed launch context.");
+renderAccountCenter();
+setDrawerStatus("Waiting for account runtime.");
 renderNotifications();
 refreshIdentityHandle();
 syncUiToHash();
@@ -3261,7 +3642,7 @@ syncUiToHash();
 async function bootstrap(): Promise<void> {
   setBootSplash("Connecting");
   setConnectionState("loading", "neutral");
-  setDrawerStatus("Preparing your Constitute NVR view.");
+  setDrawerStatus("Preparing Security Cameras.");
   app.dataset.launchStage = "launch_context";
   appendLog("bootstrapping managed NVR app surface");
   markStartupStage("nvr.boot.start");
@@ -3290,13 +3671,33 @@ async function bootstrap(): Promise<void> {
 
 void bootstrap().catch((error) => {
   const launchFailure = asManagedLaunchError(error, "launch_context");
-  console.error(launchFailure);
   closePeerConnection();
   dismissBootSplash();
-  setConnectionState("error", "bad");
-  setDrawerStatus(launchFailure.detail);
   app.dataset.launchStage = launchFailure.stage;
   const message = launchFailure.detail;
+  if (isDirectEntryIdleLaunchFailure(launchFailure)) {
+    console.warn(launchFailure);
+    setConnectionState("idle", "neutral");
+    const lowerMessage = message.toLowerCase();
+    const accountRequired = lowerMessage.includes("link an identity") || lowerMessage.includes("device key is not ready");
+    const title = accountRequired
+      ? "Account Required"
+      : "No Security Cameras Service";
+    const body = accountRequired
+      ? "Open Account Center to finish onboarding, then Security Cameras will open directly."
+      : "Connect an account with access to an NVR service, then this app will open it directly.";
+    setDrawerStatus(accountRequired
+      ? "Account setup is required before Security Cameras can connect."
+      : "No Security Cameras service is currently available from this account runtime.");
+    setGridEmpty(title, body);
+    addNotification("warn", "Security Cameras unavailable", message, "app");
+    appendLog(`idle [${launchFailure.stage}] ${message}`);
+    void reportServiceStatus("idle", message, launchFailure.stage);
+    return;
+  }
+  console.error(launchFailure);
+  setConnectionState("error", "bad");
+  setDrawerStatus(launchFailure.detail);
   setGridEmpty("Launch Failed", `${launchFailure.stage}: ${message}`);
   addNotification("bad", "Managed launch failed", message, "app");
   appendLog(`fatal [${launchFailure.stage}] ${message}`);

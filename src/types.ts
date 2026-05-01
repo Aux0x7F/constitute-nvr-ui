@@ -3,7 +3,7 @@ export type ConnectionConfig = {
   identityId: string;
   devicePk: string;
   identitySecretHex: string;
-  allowUnsignedHelloMvp?: boolean;
+  allowUnsignedDebugHello?: boolean;
 };
 
 export type HelloRequest = {
