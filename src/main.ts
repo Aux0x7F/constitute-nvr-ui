@@ -1,6 +1,7 @@
 import "constitute-ui/styles.css";
 import "./styles.css";
 import { renderActionList, renderAccountCenterSummary, setConnectionStateText } from "constitute-ui";
+import { BROKER } from "constitute-protocol";
 import { renderShell } from "./shell";
 
 type IceServerHints = {
@@ -8,7 +9,7 @@ type IceServerHints = {
   turn?: string[];
 };
 
-type LaunchCameraDisplay = {
+type ServiceAccessCameraDisplay = {
   sourceId?: string;
   name?: string;
   viewGranted?: boolean;
@@ -23,7 +24,7 @@ type GrantedScope = {
   grantIds?: string[];
 };
 
-type LaunchDisplay = {
+type ServiceAccessDisplay = {
   serviceLabel?: string;
   serviceVersion?: string;
   service?: string;
@@ -31,13 +32,13 @@ type LaunchDisplay = {
   cameraCount?: number;
   configuredSources?: number;
   sources?: string[];
-  cameras?: LaunchCameraDisplay[];
+  cameras?: ServiceAccessCameraDisplay[];
   iceServers?: IceServerHints;
   grantedScope?: GrantedScope;
 };
 
-type LaunchContext = {
-  launchId: string;
+type ServiceAccessContext = {
+  contextId: string;
   app: string;
   repo: string;
   identityId: string;
@@ -45,17 +46,17 @@ type LaunchContext = {
   gatewayPk: string;
   servicePk: string;
   service: string;
-  launchToken: string;
-  display?: LaunchDisplay;
+  serviceCapability: string;
+  display?: ServiceAccessDisplay;
   createdAt: number;
   expiresAt: number;
 };
 
-type LaunchStage =
+type ServiceAccessStage =
   | "surface_load"
-  | "launch_context"
-  | "launch_authorization"
-  | "gateway_signal"
+  | "service_access_context"
+  | "service_access_authorization"
+  | "service_signal"
   | "webrtc_media";
 
 type PendingRequest<T> = {
@@ -78,14 +79,14 @@ type GatewayGrantResult = {
   error?: string;
 };
 
-type GatewayLaunchResult = {
+type GatewayServiceAccessResult = {
   requestId: string;
   gatewayPk: string;
   servicePk: string;
   service: string;
   capability: string;
-  launchToken: string;
-  display?: LaunchDisplay;
+  serviceCapability: string;
+  display?: ServiceAccessDisplay;
   expiresAt: number;
   ts: number;
 };
@@ -297,7 +298,7 @@ type RuntimeSnapshot = {
   };
   resourceNames?: Record<string, unknown>;
   managedServiceIssue?: Record<string, unknown> | null;
-  launchContextCount?: number;
+  serviceAccessContextCount?: number;
 };
 
 type ManagedApplianceRecord = Record<string, unknown> & {
@@ -326,15 +327,15 @@ type CameraSettingsFocusSnapshot = {
 };
 
 const DIAGNOSTICS_STORAGE_KEY = "constitute.nvr.diagnostics";
-const LAUNCH_REQUEST_TIMEOUT_MS = 6_000;
-const LAUNCH_REFRESH_TIMEOUT_MS = 20_000;
+const SERVICE_ACCESS_REQUEST_TIMEOUT_MS = 6_000;
+const SERVICE_ACCESS_REFRESH_TIMEOUT_MS = 20_000;
 const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
 const ADMIN_SIGNAL_REQUEST_TIMEOUT_MS = 135_000;
 const CAMERA_APPLY_REQUEST_TIMEOUT_MS = 135_000;
 const GRANT_REQUEST_TIMEOUT_MS = 30_000;
-const DIRECT_ENTRY_LAUNCH_REQUEST_TIMEOUT_MS = 135_000;
-const DIRECT_ENTRY_LAUNCH_RETRY_BASE_MS = 1_000;
-const DIRECT_ENTRY_LAUNCH_RETRY_MAX_MS = 10_000;
+const DIRECT_ENTRY_SERVICE_ACCESS_REQUEST_TIMEOUT_MS = 135_000;
+const DIRECT_ENTRY_SERVICE_ACCESS_RETRY_BASE_MS = 1_000;
+const DIRECT_ENTRY_SERVICE_ACCESS_RETRY_MAX_MS = 10_000;
 const RUNTIME_WORKER_VERSION = Object.freeze({ major: 2, minor: 9 });
 const RUNTIME_WORKER_BUILD_ID = `runtime-${RUNTIME_WORKER_VERSION.major}.${RUNTIME_WORKER_VERSION.minor}`;
 const RUNTIME_ATTACH_TIMEOUT_MS = 5_000;
@@ -342,7 +343,7 @@ const RUNTIME_WRITE_TIMEOUT_MS = 10_000;
 const DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS = 15_000;
 const DIRECT_ENTRY_ACCOUNT_HYDRATION_POLL_MS = 350;
 const DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS = 2_000;
-const LAUNCH_REFRESH_SKEW_MS = 15_000;
+const SERVICE_ACCESS_REFRESH_SKEW_MS = 15_000;
 const PTZ_STEP_DEGREES = 10;
 const PTZ_STEP_NORMALIZED = PTZ_STEP_DEGREES / 180;
 // Keep PTZ hidden until the driver reports a verified control surface.
@@ -393,7 +394,7 @@ const cameraRefreshStatusEl = shell.cameraRefreshStatusEl;
 const nvrSettingsSummaryEl = document.getElementById("nvrSettingsSummary") as HTMLDivElement | null;
 
 const cameraTiles = new Map<string, CameraTile>();
-const launchCameraInfoBySourceId = new Map<string, LaunchCameraDisplay>();
+const serviceAccessCameraInfoBySourceId = new Map<string, ServiceAccessCameraDisplay>();
 const notifications: NotificationEntry[] = [];
 
 let runtimePort: MessagePort | null = null;
@@ -401,7 +402,7 @@ let runtimeRequestSeq = 1;
 const pendingRuntimeResponses = new Map<string, PendingRequest<unknown>>();
 let runtimeReadyPromise: Promise<MessagePort | null> | null = null;
 let resolveRuntimeReady: ((value: MessagePort | null) => void) | null = null;
-let launchContext: LaunchContext | null = null;
+let serviceAccessContext: ServiceAccessContext | null = null;
 let peerConnection: RTCPeerConnection | null = null;
 let transceiverSourceIds: string[] = [];
 let diagnosticsEnabled = false;
@@ -430,41 +431,41 @@ let cameraInventoryRefreshPromise: Promise<void> | null = null;
 let expandedCandidateId = "";
 let notificationMenuOpen = false;
 let accountCenterOpen = false;
-let launchRefreshPromise: Promise<LaunchContext> | null = null;
+let serviceAccessRefreshPromise: Promise<ServiceAccessContext> | null = null;
 let scheduledReconnectTimer = 0;
 let reconnectInFlight: Promise<void> | null = null;
 let reconnectAttemptCount = 0;
 let accountBridgeFrame: HTMLIFrameElement | null = null;
 let accountBridgePromise: Promise<void> | null = null;
-let directEntryLaunchAttempted = false;
+let directEntryServiceAccessAttempted = false;
 
-function ptzUiCapable(camera: LaunchCameraDisplay | null | undefined): boolean {
+function ptzUiCapable(camera: ServiceAccessCameraDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true;
 }
 
-function ptzUiInteractive(camera: LaunchCameraDisplay | null | undefined): boolean {
+function ptzUiInteractive(camera: ServiceAccessCameraDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true && camera?.controlGranted === true;
 }
 
-class ManagedLaunchError extends Error {
-  stage: LaunchStage;
+class ServiceAccessError extends Error {
+  stage: ServiceAccessStage;
   detail: string;
 
-  constructor(stage: LaunchStage, detail: string) {
+  constructor(stage: ServiceAccessStage, detail: string) {
     super(`${stage}: ${detail}`);
-    this.name = "ManagedLaunchError";
+    this.name = "ServiceAccessError";
     this.stage = stage;
     this.detail = detail;
   }
 }
 
-function launchError(stage: LaunchStage, detail: string): ManagedLaunchError {
-  return new ManagedLaunchError(stage, String(detail || "Unknown error").trim() || "Unknown error");
+function serviceAccessError(stage: ServiceAccessStage, detail: string): ServiceAccessError {
+  return new ServiceAccessError(stage, String(detail || "Unknown error").trim() || "Unknown error");
 }
 
-function asManagedLaunchError(error: unknown, fallbackStage: LaunchStage): ManagedLaunchError {
-  if (error instanceof ManagedLaunchError) return error;
-  return launchError(fallbackStage, String((error as Error)?.message || error || "Unknown error"));
+function asServiceAccessError(error: unknown, fallbackStage: ServiceAccessStage): ServiceAccessError {
+  if (error instanceof ServiceAccessError) return error;
+  return serviceAccessError(fallbackStage, String((error as Error)?.message || error || "Unknown error"));
 }
 
 function appendLog(message: string): void {
@@ -599,14 +600,14 @@ function pkLabel(value: string): string {
   return resolvedResourceName(raw, shortPk(raw));
 }
 
-function serviceLabelForContext(context: LaunchContext | null): string {
+function serviceLabelForContext(context: ServiceAccessContext | null): string {
   if (!context) return "Constitute NVR";
   const explicit = String(context.display?.serviceLabel || "").trim();
   if (explicit) return explicit;
   return resolvedResourceName(context.servicePk, shortPk(context.servicePk));
 }
 
-function gatewayLabelForContext(context: LaunchContext | null): string {
+function gatewayLabelForContext(context: ServiceAccessContext | null): string {
   if (!context) return "—";
   return resolvedResourceName(context.gatewayPk, shortPk(context.gatewayPk));
 }
@@ -634,7 +635,7 @@ function cameraDisplayName(sourceId: string): string {
   const available = availableCameraInfo(key);
   const availableLabel = String(available?.name || "").trim();
   if (availableLabel) return availableLabel;
-  const base = launchCameraInfoBySourceId.get(key);
+  const base = serviceAccessCameraInfoBySourceId.get(key);
   const baseLabel = String(base?.name || "").trim();
   if (baseLabel && !baseLabel.includes("192.168.")) return baseLabel;
   return humanizeSourceId(key);
@@ -661,12 +662,12 @@ function hashParams(): URLSearchParams {
   return new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
 }
 
-function readUiState(): { launchId: string; activity: NvrActivity; settingsTab: NvrSettingsTab; cameraId: string } {
+function readUiState(): { contextId: string; activity: NvrActivity; settingsTab: NvrSettingsTab; cameraId: string } {
   const params = hashParams();
   const activity = String(params.get("activity") || "live").trim().toLowerCase();
   const settingsTab = String(params.get("settings") || "nvr").trim().toLowerCase();
   return {
-    launchId: String(params.get("launch") || "").trim(),
+    contextId: String(params.get("serviceAccess") || "").trim(),
     activity: activity === "history" || activity === "settings" ? activity : "live",
     settingsTab: settingsTab === "cameras" ? settingsTab : "nvr",
     cameraId: String(params.get("camera") || "").trim(),
@@ -679,7 +680,7 @@ function writeUiState(
 ): void {
   const current = readUiState();
   const params = new URLSearchParams();
-  if (current.launchId) params.set("launch", current.launchId);
+  if (current.contextId) params.set("serviceAccess", current.contextId);
   const activity = partial.activity ?? current.activity;
   const settingsTab = partial.settingsTab ?? current.settingsTab;
   const cameraId = partial.cameraId !== undefined ? partial.cameraId : current.cameraId;
@@ -695,8 +696,8 @@ function writeUiState(
   syncUiToHash();
 }
 
-function parseLaunchId(): string {
-  return readUiState().launchId;
+function parseServiceAccessId(): string {
+  return readUiState().contextId;
 }
 
 function readDiagnosticsPreference(): boolean {
@@ -796,7 +797,7 @@ function toggleNotificationMenu(): void {
   }
 }
 
-function identityHandleForContext(context: LaunchContext | null): string {
+function identityHandleForContext(context: ServiceAccessContext | null): string {
   const identityId = String(context?.identityId || "").trim();
   if (!identityId) return "@unlinked";
   const runtimeHandle = runtimeIdentityHandle();
@@ -812,9 +813,9 @@ function runtimeIdentityHandle(): string {
 }
 
 function refreshIdentityHandle(): void {
-  const identityId = String(launchContext?.identityId || "").trim();
+  const identityId = String(serviceAccessContext?.identityId || "").trim();
   const linked = Boolean(identityId);
-  identityHandleEl.textContent = identityHandleForContext(launchContext);
+  identityHandleEl.textContent = identityHandleForContext(serviceAccessContext);
   identityHandleEl.classList.toggle("identityHandle-linked", linked);
   identityHandleEl.classList.toggle("identityHandle-unlinked", !linked);
   identityHandleEl.title = linked ? "Open account center" : "Open account center";
@@ -849,8 +850,8 @@ function openAccountCenterApp(targetHash = ""): void {
 }
 
 function renderAccountCenter(): void {
-  const identityId = String(launchContext?.identityId || "").trim();
-  const handle = identityHandleForContext(launchContext);
+  const identityId = String(serviceAccessContext?.identityId || "").trim();
+  const handle = identityHandleForContext(serviceAccessContext);
   const connection = String(connStateTextEl.textContent || "Offline").trim() || "Offline";
   renderAccountCenterSummary(accountCenterSummaryEl, {
     handle,
@@ -1047,7 +1048,10 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       resolve(value);
     };
     try {
-      const worker = new SharedWorker(runtimeWorkerUrl());
+      const worker = new SharedWorker(runtimeWorkerUrl(), {
+        type: "module",
+        name: `constitute-account-runtime-${RUNTIME_WORKER_BUILD_ID}`,
+      });
       try {
         worker.onerror = (event: ErrorEvent) => {
           appendLog(`runtime worker error: ${String(event?.message || "worker failure")}`);
@@ -1109,7 +1113,7 @@ async function runtimeBrokerCall<T = unknown>(
   }
 }
 
-async function reportServiceStatus(state: string, reason: string, stage: LaunchStage | "" = ""): Promise<void> {
+async function reportServiceStatus(state: string, reason: string, stage: ServiceAccessStage | "" = ""): Promise<void> {
   try {
     await runtimeCall("runtime.status.put", {
       role: "service",
@@ -1125,8 +1129,8 @@ async function reportServiceStatus(state: string, reason: string, stage: LaunchS
   } catch {}
 }
 
-async function requestLaunchContextFromRuntime(launchId: string): Promise<LaunchContext | null> {
-  return await runtimeCall<LaunchContext | null>("launchContext.get", { launchId }, LAUNCH_REQUEST_TIMEOUT_MS);
+async function requestServiceAccessContextFromRuntime(contextId: string): Promise<ServiceAccessContext | null> {
+  return await runtimeCall<ServiceAccessContext | null>(BROKER.SERVICE_ACCESS_CONTEXT_GET, { contextId }, SERVICE_ACCESS_REQUEST_TIMEOUT_MS);
 }
 
 function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
@@ -1149,20 +1153,20 @@ function accountRuntimeIdentityResolved(snapshot: RuntimeSnapshot | null): boole
   return typeof identity?.linked === "boolean";
 }
 
-async function waitForDirectEntryNvrLaunchRecord(): Promise<{
+async function waitForDirectEntryNvrServiceRecord(): Promise<{
   snapshot: RuntimeSnapshot | null;
   record: ManagedApplianceRecord | null;
 }> {
   await ensureAccountBridge("direct app entry");
   let snapshot = await currentRuntimeSnapshot();
-  let record = directEntryNvrLaunchRecord(snapshot);
+  let record = directEntryNvrServiceRecord(snapshot);
   if (record) return { snapshot, record };
 
   const deadline = Date.now() + DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS;
   let identityResolvedAt = 0;
   while (Date.now() < deadline) {
     snapshot = await currentRuntimeSnapshot();
-    record = directEntryNvrLaunchRecord(snapshot);
+    record = directEntryNvrServiceRecord(snapshot);
     if (record) return { snapshot, record };
     if (accountRuntimeIdentityResolved(snapshot)) {
       identityResolvedAt ||= Date.now();
@@ -1176,24 +1180,24 @@ async function waitForDirectEntryNvrLaunchRecord(): Promise<{
   return { snapshot, record: null };
 }
 
-async function requestDirectEntryLaunchContext(): Promise<LaunchContext> {
-  directEntryLaunchAttempted = true;
-  setConnectionState("launching", "warn");
-  setDrawerStatus("Launching Security Cameras through your account runtime.");
-  setGridEmpty("Launching Security Cameras", "Resolving an account-authorized camera session through the gateway.");
+async function requestDirectEntryServiceAccessContext(): Promise<ServiceAccessContext> {
+  directEntryServiceAccessAttempted = true;
+  setConnectionState("opening", "warn");
+  setDrawerStatus("Opening Security Cameras through your account runtime.");
+  setGridEmpty("Opening Security Cameras", "Resolving an account-authorized camera session through the gateway.");
   dismissBootSplash();
-  void reportServiceStatus("launching", "Resolving an account-authorized camera session.", "launch_authorization");
+  void reportServiceStatus("opening", "Resolving an account-authorized camera session.", "service_access_authorization");
 
-  const { snapshot, record } = await waitForDirectEntryNvrLaunchRecord();
+  const { snapshot, record } = await waitForDirectEntryNvrServiceRecord();
   if (!record) {
     if (accountRuntimeNeedsIdentity(snapshot)) {
-      throw launchError(
-        "launch_context",
+      throw serviceAccessError(
+        "service_access_context",
         "link an identity before opening Security Cameras",
       );
     }
-    throw launchError(
-      "launch_context",
+    throw serviceAccessError(
+      "service_access_context",
       "no Security Cameras service is available from this account runtime",
     );
   }
@@ -1205,7 +1209,7 @@ async function requestDirectEntryLaunchContext(): Promise<LaunchContext> {
   while (!result) {
     attempt += 1;
     try {
-      result = await runtimeBrokerCall<Record<string, unknown>>("gateway.launch.request", {
+      result = await runtimeBrokerCall<Record<string, unknown>>(BROKER.SERVICE_ACCESS_REQUEST, {
         payload: {
           record: selectedRecord,
           options: {
@@ -1213,63 +1217,63 @@ async function requestDirectEntryLaunchContext(): Promise<LaunchContext> {
             capability: "nvr.view",
           },
         },
-      }, DIRECT_ENTRY_LAUNCH_REQUEST_TIMEOUT_MS, "direct app launch");
+      }, DIRECT_ENTRY_SERVICE_ACCESS_REQUEST_TIMEOUT_MS, "direct service access");
     } catch (error) {
-      const message = String((error as Error)?.message || error || "Security Cameras launch failed");
+      const message = String((error as Error)?.message || error || "Security Cameras service access failed");
       const lowerMessage = message.toLowerCase();
       if (lowerMessage.includes("link an identity") || lowerMessage.includes("identity is not linked")) {
-        throw launchError("launch_context", "link an identity before opening Security Cameras");
+        throw serviceAccessError("service_access_context", "link an identity before opening Security Cameras");
       }
-      appendLog(`direct launch attempt ${attempt} deferred: ${message}`);
-      setConnectionState("launching", "warn");
-      setDrawerStatus("Security Cameras launch is still resolving through the gateway.");
-      setGridEmpty("Launching Security Cameras", "Resolving an account-authorized camera session through the gateway.");
-      void reportServiceStatus("launching", message, "launch_authorization");
+      appendLog(`direct service access attempt ${attempt} deferred: ${message}`);
+      setConnectionState("opening", "warn");
+      setDrawerStatus("Security Cameras service access is still resolving through the gateway.");
+      setGridEmpty("Opening Security Cameras", "Resolving an account-authorized camera session through the gateway.");
+      void reportServiceStatus("opening", message, "service_access_authorization");
 
       const refreshedSnapshot = await currentRuntimeSnapshot().catch(() => null);
-      const refreshedRecord = directEntryNvrLaunchRecord(refreshedSnapshot);
+      const refreshedRecord = directEntryNvrServiceRecord(refreshedSnapshot);
       if (refreshedRecord) {
         selectedRecord = refreshedRecord;
         selectedSnapshot = refreshedSnapshot;
       }
       const retryDelayMs = Math.min(
-        DIRECT_ENTRY_LAUNCH_RETRY_MAX_MS,
-        DIRECT_ENTRY_LAUNCH_RETRY_BASE_MS * Math.max(1, attempt),
+        DIRECT_ENTRY_SERVICE_ACCESS_RETRY_MAX_MS,
+        DIRECT_ENTRY_SERVICE_ACCESS_RETRY_BASE_MS * Math.max(1, attempt),
       );
       await delay(retryDelayMs);
     }
   }
-  const launch = normalizeGatewayLaunchResult(result);
-  if (!launch.launchToken) {
-    throw launchError("launch_authorization", "Security Cameras launch returned no launch token");
+  const access = normalizeGatewayServiceAccessResult(result);
+  if (!access.serviceCapability) {
+    throw serviceAccessError("service_access_authorization", "Security Cameras service access returned no service capability");
   }
 
-  const servicePk = String(launch.servicePk || applianceDevicePk(record)).trim();
-  const gatewayPk = String(launch.gatewayPk || applianceGatewayPk(record)).trim();
+  const servicePk = String(access.servicePk || applianceDevicePk(record)).trim();
+  const gatewayPk = String(access.gatewayPk || applianceGatewayPk(record)).trim();
   if (!servicePk || !gatewayPk) {
-    throw launchError("launch_authorization", "Security Cameras launch did not include service and gateway identity");
+    throw serviceAccessError("service_access_authorization", "Security Cameras service access did not include service and gateway identity");
   }
 
   const identity = selectedSnapshot?.shell && typeof selectedSnapshot.shell === "object"
     ? selectedSnapshot.shell.identity as Record<string, unknown> | undefined
     : undefined;
   return {
-    launchId: randomOpaqueId("launch"),
+    contextId: randomOpaqueId("service-access"),
     app: "nvr",
     repo: "constitute-nvr-ui",
     identityId: String(identity?.identityId || "").trim(),
     devicePk: servicePk,
     gatewayPk,
     servicePk,
-    service: launch.service || "nvr",
-    launchToken: launch.launchToken,
-    display: launch.display ?? {},
+    service: access.service || "nvr",
+    serviceCapability: access.serviceCapability,
+    display: access.display ?? {},
     createdAt: Date.now(),
-    expiresAt: Number(launch.expiresAt || (Date.now() + (2 * 60_000))),
+    expiresAt: Number(access.expiresAt || (Date.now() + (2 * 60_000))),
   };
 }
 
-function normalizeGatewayLaunchResult(result: unknown, fallbackRequestId = ""): GatewayLaunchResult {
+function normalizeGatewayServiceAccessResult(result: unknown, fallbackRequestId = ""): GatewayServiceAccessResult {
   const payload = (result && typeof result === "object")
     ? result as Record<string, unknown>
     : {};
@@ -1279,23 +1283,23 @@ function normalizeGatewayLaunchResult(result: unknown, fallbackRequestId = ""): 
     servicePk: String(payload.servicePk || "").trim(),
     service: String(payload.service || "nvr").trim() || "nvr",
     capability: String(payload.capability || "").trim(),
-    launchToken: String(payload.launchToken || "").trim(),
+    serviceCapability: String(payload.serviceCapability || "").trim(),
     display: payload.display && typeof payload.display === "object"
-      ? payload.display as LaunchDisplay
+      ? payload.display as ServiceAccessDisplay
       : undefined,
     expiresAt: Number(payload.expiresAt || 0),
     ts: Number(payload.ts || Date.now()),
   };
 }
 
-function launchContextNeedsRefresh(context: LaunchContext | null, skewMs = LAUNCH_REFRESH_SKEW_MS): boolean {
+function serviceAccessContextNeedsRefresh(context: ServiceAccessContext | null, skewMs = SERVICE_ACCESS_REFRESH_SKEW_MS): boolean {
   if (!context) return true;
   const expiresAt = Number(context.expiresAt || 0);
   if (!expiresAt) return true;
   return expiresAt <= (Date.now() + Math.max(0, skewMs));
 }
 
-function launchRefreshRecord(context: LaunchContext): Record<string, string> {
+function serviceAccessRefreshRecord(context: ServiceAccessContext): Record<string, string> {
   return {
     devicePk: context.servicePk,
     pk: context.servicePk,
@@ -1304,7 +1308,7 @@ function launchRefreshRecord(context: LaunchContext): Record<string, string> {
   };
 }
 
-function launchRefreshOptions(context: LaunchContext): Record<string, string> {
+function serviceAccessRefreshOptions(context: ServiceAccessContext): Record<string, string> {
   const service = String(context.service || "nvr").trim() || "nvr";
   return {
     service,
@@ -1312,65 +1316,65 @@ function launchRefreshOptions(context: LaunchContext): Record<string, string> {
   };
 }
 
-async function persistLaunchContext(context: LaunchContext): Promise<LaunchContext> {
-  launchContext = context;
+async function persistServiceAccessContext(context: ServiceAccessContext): Promise<ServiceAccessContext> {
+  serviceAccessContext = context;
   refreshSummary(context);
-  await runtimeCall("launchContext.put", { context }, RUNTIME_WRITE_TIMEOUT_MS);
+  await runtimeCall(BROKER.SERVICE_ACCESS_CONTEXT_PUT, { context }, RUNTIME_WRITE_TIMEOUT_MS);
   return context;
 }
 
-function isExpiredLaunchTokenError(error: unknown): boolean {
+function isExpiredServiceCapabilityError(error: unknown): boolean {
   const message = String((error as Error)?.message || error || "").toLowerCase();
-  return message.includes("launch token expired") || message.includes("invalid_launch_token");
+  return message.includes("service capability expired") || message.includes("invalid_service_capability");
 }
 
-async function requestGatewayLaunch(): Promise<GatewayLaunchResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
-  const result = await runtimeBrokerCall<Record<string, unknown>>("gateway.launch.request", {
+async function requestGatewayServiceAccess(): Promise<GatewayServiceAccessResult> {
+  if (!serviceAccessContext) throw new Error("service access context is not loaded");
+  const result = await runtimeBrokerCall<Record<string, unknown>>(BROKER.SERVICE_ACCESS_REQUEST, {
     payload: {
-      record: launchRefreshRecord(launchContext),
-      options: launchRefreshOptions(launchContext),
+      record: serviceAccessRefreshRecord(serviceAccessContext),
+      options: serviceAccessRefreshOptions(serviceAccessContext),
     },
-  }, LAUNCH_REFRESH_TIMEOUT_MS, "launch refresh");
-  appendLog("runtime broker delivered launch refresh");
-  return normalizeGatewayLaunchResult(result);
+  }, SERVICE_ACCESS_REFRESH_TIMEOUT_MS, "service access refresh");
+  appendLog("runtime broker delivered service access refresh");
+  return normalizeGatewayServiceAccessResult(result);
 }
 
-async function ensureFreshLaunchContext(force = false, reason = ""): Promise<LaunchContext> {
-  if (!launchContext) throw new Error("launch context is not loaded");
-  if (!force && !launchContextNeedsRefresh(launchContext)) {
-    return launchContext;
+async function ensureFreshServiceAccessContext(force = false, reason = ""): Promise<ServiceAccessContext> {
+  if (!serviceAccessContext) throw new Error("service access context is not loaded");
+  if (!force && !serviceAccessContextNeedsRefresh(serviceAccessContext)) {
+    return serviceAccessContext;
   }
-  if (launchRefreshPromise) {
-    return await launchRefreshPromise;
+  if (serviceAccessRefreshPromise) {
+    return await serviceAccessRefreshPromise;
   }
 
-  const current = launchContext;
-  launchRefreshPromise = (async () => {
+  const current = serviceAccessContext;
+  serviceAccessRefreshPromise = (async () => {
     const cause = String(reason || "").trim();
-    appendLog(`refreshing managed launch context${cause ? ` (${cause})` : ""}`);
-    const refreshed = await requestGatewayLaunch();
-    if (!refreshed.launchToken) {
-      throw new Error("managed launch refresh returned no launch token");
+    appendLog(`refreshing managed service access context${cause ? ` (${cause})` : ""}`);
+    const refreshed = await requestGatewayServiceAccess();
+    if (!refreshed.serviceCapability) {
+      throw new Error("service access refresh returned no service capability");
     }
-    const next = await persistLaunchContext({
+    const next = await persistServiceAccessContext({
       ...current,
       gatewayPk: refreshed.gatewayPk || current.gatewayPk,
       servicePk: refreshed.servicePk || current.servicePk,
       service: refreshed.service || current.service,
-      launchToken: refreshed.launchToken,
+      serviceCapability: refreshed.serviceCapability,
       display: refreshed.display ?? current.display,
       createdAt: Date.now(),
       expiresAt: Number(refreshed.expiresAt || (Date.now() + (2 * 60_000))),
     });
-    appendLog(`launch context refreshed until ${new Date(next.expiresAt).toLocaleTimeString()}`);
+    appendLog(`service access context refreshed until ${new Date(next.expiresAt).toLocaleTimeString()}`);
     return next;
   })();
 
   try {
-    return await launchRefreshPromise;
+    return await serviceAccessRefreshPromise;
   } finally {
-    launchRefreshPromise = null;
+    serviceAccessRefreshPromise = null;
   }
 }
 
@@ -1379,15 +1383,15 @@ async function requestGatewaySignalOnce(
   payload: unknown,
   timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
 ): Promise<GatewaySignalResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
+  if (!serviceAccessContext) throw new Error("service access context is not loaded");
   const requestId = randomOpaqueId("nvr-signal");
-  const runtimeResult = await runtimeBrokerCall<GatewaySignalResult>("gateway.signal.request", {
+  const runtimeResult = await runtimeBrokerCall<GatewaySignalResult>(BROKER.SERVICE_SIGNAL_REQUEST, {
     payload: {
       requestId,
-      gatewayPk: launchContext.gatewayPk,
-      servicePk: launchContext.servicePk,
-      service: launchContext.service || "nvr",
-      launchToken: launchContext.launchToken,
+      gatewayPk: serviceAccessContext.gatewayPk,
+      servicePk: serviceAccessContext.servicePk,
+      service: serviceAccessContext.service || "nvr",
+      serviceCapability: serviceAccessContext.serviceCapability,
       signalType,
       payload,
     },
@@ -1401,16 +1405,16 @@ async function requestGatewaySignal(
   payload: unknown,
   timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
 ): Promise<GatewaySignalResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
-  await ensureFreshLaunchContext(false, `${signalType} preflight`);
+  if (!serviceAccessContext) throw new Error("service access context is not loaded");
+  await ensureFreshServiceAccessContext(false, `${signalType} preflight`);
   try {
     return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
   } catch (error) {
-    if (!isExpiredLaunchTokenError(error)) {
+    if (!isExpiredServiceCapabilityError(error)) {
       throw error;
     }
-    appendLog(`launch token expired during ${signalType}; refreshing and retrying`);
-    await ensureFreshLaunchContext(true, `${signalType} retry`);
+    appendLog(`service capability expired during ${signalType}; refreshing and retrying`);
+    await ensureFreshServiceAccessContext(true, `${signalType} retry`);
     return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
   }
 }
@@ -1419,14 +1423,14 @@ async function requestGatewayGrantAction(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<GatewayGrantResult> {
-  if (!launchContext) throw new Error("launch context is not loaded");
+  if (!serviceAccessContext) throw new Error("service access context is not loaded");
   const requestId = randomOpaqueId("nvr-grant");
   return await runtimeBrokerCall<GatewayGrantResult>("gateway.grant.request", {
     payload: {
       requestId,
-      gatewayPk: launchContext.gatewayPk,
-      servicePk: launchContext.servicePk,
-      service: launchContext.service || "nvr",
+      gatewayPk: serviceAccessContext.gatewayPk,
+      servicePk: serviceAccessContext.servicePk,
+      service: serviceAccessContext.service || "nvr",
       action,
       ...payload,
     },
@@ -1554,7 +1558,7 @@ function directEntryNvrRecordFromGateway(gateway: ManagedApplianceRecord): Manag
   };
 }
 
-function directEntryNvrLaunchRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
+function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
   const records = snapshotManagedApplianceRecords(snapshot);
   const services = records
     .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
@@ -1594,7 +1598,7 @@ function setGridEmpty(title: string, body: string): void {
   `;
 }
 
-function normalizeLaunchCameraEntries(display: LaunchDisplay): LaunchCameraDisplay[] {
+function normalizeServiceAccessCameraEntries(display: ServiceAccessDisplay): ServiceAccessCameraDisplay[] {
   const entries = Array.isArray(display?.cameras) ? display.cameras : [];
   const normalized = entries
     .map((entry) => {
@@ -1609,7 +1613,7 @@ function normalizeLaunchCameraEntries(display: LaunchDisplay): LaunchCameraDispl
         ptzCapable: entry.ptzCapable === true,
       };
     })
-    .filter((entry): entry is LaunchCameraDisplay => !!entry);
+    .filter((entry): entry is ServiceAccessCameraDisplay => !!entry);
   if (normalized.length > 0) return normalized;
   return normalizeSourceIds(display?.sources || []).map((sourceId) => ({
     sourceId,
@@ -1626,10 +1630,10 @@ function availableCameraInfo(sourceId: string): CameraGrantView | null {
   return grantInventory.availableCameras.find((camera) => String(camera.sourceId || "").trim() === target) || null;
 }
 
-function launchCameraInfo(sourceId: string): LaunchCameraDisplay | null {
+function serviceAccessCameraInfo(sourceId: string): ServiceAccessCameraDisplay | null {
   const key = String(sourceId || "").trim();
   if (!key) return null;
-  const base = launchCameraInfoBySourceId.get(key) || null;
+  const base = serviceAccessCameraInfoBySourceId.get(key) || null;
   const available = availableCameraInfo(key);
   const mounted = mountedCameraRecord(key);
   if (!base && !available && !mounted) return null;
@@ -1643,7 +1647,7 @@ function launchCameraInfo(sourceId: string): LaunchCameraDisplay | null {
 }
 
 function viewerIsOwner(): boolean {
-  return launchContext?.display?.grantedScope?.owner === true;
+  return serviceAccessContext?.display?.grantedScope?.owner === true;
 }
 
 function ownerCanAdmin(): boolean {
@@ -1657,13 +1661,13 @@ function normalizeAdminError(error: unknown): string {
     return "Gateway update required before camera administration is available from this NVR surface.";
   }
   if (lowered.includes("admin_requires_owner")) {
-    return "Owner launch is required before camera administration is available.";
+    return "Owner service access is required before camera administration is available.";
   }
   return message || "Camera administration is unavailable.";
 }
 
 function defaultCameraSettingsDraft(sourceId: string): CameraSettingsDraft {
-  const camera = launchCameraInfo(sourceId);
+  const camera = serviceAccessCameraInfo(sourceId);
   const displayName = cameraDisplayName(sourceId);
   return {
     displayName,
@@ -1873,8 +1877,8 @@ function settingsCameraRows(): CameraGrantView[] {
   if (grantInventory?.availableCameras?.length) {
     return grantInventory.availableCameras;
   }
-  return normalizeLaunchCameraEntries(launchContext?.display || {}).map((camera) => {
-    const merged = launchCameraInfo(String(camera.sourceId || "").trim()) || camera;
+  return normalizeServiceAccessCameraEntries(serviceAccessContext?.display || {}).map((camera) => {
+    const merged = serviceAccessCameraInfo(String(camera.sourceId || "").trim()) || camera;
     return {
       sourceId: merged.sourceId,
       name: merged.name,
@@ -2222,7 +2226,7 @@ function ensureCameraTile(sourceId: string): CameraTile {
 
   const title = document.createElement("div");
   title.className = "cameraTitle";
-  const info = launchCameraInfo(sourceId);
+  const info = serviceAccessCameraInfo(sourceId);
   title.textContent = cameraDisplayName(sourceId);
   header.appendChild(title);
 
@@ -2445,7 +2449,7 @@ function clampPoseValue(value: number): number {
 function updateLiveTileMetadata(sourceId: string): void {
   const tile = cameraTiles.get(sourceId);
   if (!tile) return;
-  const info = launchCameraInfo(sourceId);
+  const info = serviceAccessCameraInfo(sourceId);
   tile.title.textContent = cameraDisplayName(sourceId);
   tile.ptzButton.hidden = !PTZ_UI_ENABLED;
   tile.ptzButton.disabled = !ptzUiInteractive(info);
@@ -2458,7 +2462,7 @@ function updateLiveTileMetadata(sourceId: string): void {
 }
 
 async function sendPtzCommand(sourceId: string, payload: Record<string, unknown>): Promise<void> {
-  const info = launchCameraInfo(sourceId);
+  const info = serviceAccessCameraInfo(sourceId);
   if (!ptzUiInteractive(info)) return;
   appendLog(`PTZ send ${cameraLabelForSource(sourceId)} ${debugJson(payload)}`);
   try {
@@ -2736,24 +2740,24 @@ function renderCameraNetworkSummary(network: CameraNetworkSummaryRecord): string
 }
 
 function renderNvrSettingsSummary(): void {
-  if (!nvrSettingsSummaryEl || !launchContext) return;
-  const display = launchContext.display || {};
+  if (!nvrSettingsSummaryEl || !serviceAccessContext) return;
+  const display = serviceAccessContext.display || {};
   const grantedScope = display.grantedScope || {};
   const network = cameraInventory?.cameraNetwork || {};
   const accessSummary = nvrAccessSummary();
   nvrSettingsSummaryEl.innerHTML = `
     <section class="nestedPanel">
       <div class="summaryLabel">Service</div>
-      ${renderKvRow("Label", serviceLabelForContext(launchContext))}
-      ${renderKvRow("Service", String(display.service || launchContext.service || "nvr"))}
+      ${renderKvRow("Label", serviceLabelForContext(serviceAccessContext))}
+      ${renderKvRow("Service", String(display.service || serviceAccessContext.service || "nvr"))}
       ${renderKvRow("Version", String(display.serviceVersion || "unknown"))}
       ${renderKvRow("Health", String(display.status || "online"))}
       ${viewerIsOwner() ? renderKvRow("Admin", cameraInventoryError ? "gateway update required" : "available") : ""}
     </section>
     <section class="nestedPanel">
       <div class="summaryLabel">Gateway</div>
-      ${renderKvRow("Gateway", gatewayLabelForContext(launchContext))}
-      ${renderKvRow("Launch scope", viewerIsOwner() ? "owner" : "granted")}
+      ${renderKvRow("Gateway", gatewayLabelForContext(serviceAccessContext))}
+      ${renderKvRow("Access scope", viewerIsOwner() ? "owner" : "granted")}
       ${renderKvRow("Access", accessSummary)}
       ${!viewerIsOwner() ? renderKvRow("Live scope", formatCameraScope(grantedScope.viewSources || []) || "granted cameras") : ""}
       ${!viewerIsOwner() && PTZ_UI_ENABLED ? renderKvRow("PTZ scope", formatCameraScope(grantedScope.controlSources || []) || "none") : ""}
@@ -2793,7 +2797,7 @@ function nvrAccessSummary(): string {
       ? `Owner control • shared with ${shareCount} identit${shareCount === 1 ? "y" : "ies"}`
       : "Owner control";
   }
-  const grantedScope = launchContext?.display?.grantedScope || {};
+  const grantedScope = serviceAccessContext?.display?.grantedScope || {};
   const live = formatCameraScope(grantedScope.viewSources || []) || "granted cameras";
   if (!PTZ_UI_ENABLED) {
     return `Granted access • live ${live}`;
@@ -2802,7 +2806,7 @@ function nvrAccessSummary(): string {
   return `Granted access • live ${live} • PTZ ${ptz}`;
 }
 
-function cameraAccessSummary(camera: LaunchCameraDisplay | null): string {
+function cameraAccessSummary(camera: ServiceAccessCameraDisplay | null): string {
   if (!camera) return "Access unavailable";
   if (viewerIsOwner()) {
     const shareCount = (grantInventory?.grants || []).filter((grant) => {
@@ -2822,7 +2826,7 @@ function cameraAccessSummary(camera: LaunchCameraDisplay | null): string {
 function renderCameraList(): void {
   const focusSnapshot = captureCameraSettingsFocus();
   cameraListEl.innerHTML = "";
-  if (!launchContext) return;
+  if (!serviceAccessContext) return;
   if (viewerIsOwner() && cameraInventoryError) {
     const warning = document.createElement("section");
     warning.className = "nestedPanel";
@@ -2833,7 +2837,7 @@ function renderCameraList(): void {
     cameraListEl.appendChild(warning);
   }
   const cameras = settingsCameraRows()
-    .map((row) => launchCameraInfo(String(row.sourceId || "").trim()) || {
+    .map((row) => serviceAccessCameraInfo(String(row.sourceId || "").trim()) || {
       sourceId: row.sourceId,
       name: row.name,
       viewGranted: true,
@@ -2847,7 +2851,7 @@ function renderCameraList(): void {
     for (const camera of cameras) {
       const sourceId = String(camera.sourceId || "").trim();
       if (!sourceId) continue;
-      const info = launchCameraInfo(sourceId) || camera;
+      const info = serviceAccessCameraInfo(sourceId) || camera;
       const mounted = mountedCameraRecord(sourceId);
       const item = document.createElement("article");
       item.className = "cameraListItem";
@@ -2884,11 +2888,11 @@ function renderCameraList(): void {
           }
         </div>
         <div class="cameraListActions">
-          <button type="button" class="cameraActionButton" data-action="launch" title="Focus this camera in Live">↗</button>
+          <button type="button" class="cameraActionButton" data-action="focus" title="Focus this camera in Live">↗</button>
           <button type="button" class="cameraActionButton" data-action="settings" title="Camera settings">⚙</button>
         </div>
       `;
-      item.querySelector<HTMLButtonElement>("button[data-action='launch']")?.addEventListener("click", () => {
+      item.querySelector<HTMLButtonElement>("button[data-action='focus']")?.addEventListener("click", () => {
         selectedLiveCameraId = sourceId;
         updateTileSelection();
         setActivity("live");
@@ -2999,7 +3003,7 @@ function renderCameraList(): void {
 }
 
 function buildCameraSettingsTray(sourceId: string): HTMLElement {
-  const camera = launchCameraInfo(sourceId);
+  const camera = serviceAccessCameraInfo(sourceId);
   const mounted = mountedCameraRecord(sourceId);
   const caps = mounted?.capabilities || {};
   const canAdmin = ownerCanAdmin();
@@ -3210,23 +3214,23 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   return tray;
 }
 
-function cameraCountForContext(context: LaunchContext): number {
+function cameraCountForContext(context: ServiceAccessContext): number {
   const display = context.display || {};
   return Number(
     display.cameraCount
-    || normalizeLaunchCameraEntries(display).length
+    || normalizeServiceAccessCameraEntries(display).length
     || display.configuredSources
     || normalizeSourceIds(display.sources).length
     || 0,
   );
 }
 
-function refreshSummary(context: LaunchContext): void {
+function refreshSummary(context: ServiceAccessContext): void {
   const display = context.display || {};
   rememberResolvedResourceName(context.servicePk, display.serviceLabel);
-  launchCameraInfoBySourceId.clear();
-  for (const camera of normalizeLaunchCameraEntries(display)) {
-    launchCameraInfoBySourceId.set(String(camera.sourceId || "").trim(), camera);
+  serviceAccessCameraInfoBySourceId.clear();
+  for (const camera of normalizeServiceAccessCameraEntries(display)) {
+    serviceAccessCameraInfoBySourceId.set(String(camera.sourceId || "").trim(), camera);
   }
   popGatewayEl.textContent = gatewayLabelForContext(context);
   popGatewayEl.title = context.gatewayPk;
@@ -3241,16 +3245,16 @@ function refreshSummary(context: LaunchContext): void {
 }
 
 function refreshRuntimeProjectionLabels(): void {
-  if (!launchContext) return;
-  popGatewayEl.textContent = gatewayLabelForContext(launchContext);
-  popGatewayEl.title = launchContext.gatewayPk;
-  const cameraCount = cameraCountForContext(launchContext);
-  popServicesEl.textContent = `${serviceLabelForContext(launchContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
-  popServicesEl.title = launchContext.servicePk;
+  if (!serviceAccessContext) return;
+  popGatewayEl.textContent = gatewayLabelForContext(serviceAccessContext);
+  popGatewayEl.title = serviceAccessContext.gatewayPk;
+  const cameraCount = cameraCountForContext(serviceAccessContext);
+  popServicesEl.textContent = `${serviceLabelForContext(serviceAccessContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
+  popServicesEl.title = serviceAccessContext.servicePk;
   refreshIdentityHandle();
 }
 
-function renderLaunchContextTiles(context: LaunchContext): boolean {
+function renderServiceAccessContextTiles(context: ServiceAccessContext): boolean {
   const requestedSources = normalizeSourceIds(context.display?.sources);
   if (requestedSources.length === 0) {
     cameraTiles.clear();
@@ -3275,25 +3279,25 @@ function renderLaunchContextTiles(context: LaunchContext): boolean {
   return true;
 }
 
-async function loadLaunchContext(): Promise<LaunchContext> {
-  const launchId = parseLaunchId();
-  if (!launchId) return await requestDirectEntryLaunchContext();
+async function loadServiceAccessContext(): Promise<ServiceAccessContext> {
+  const contextId = parseServiceAccessId();
+  if (!contextId) return await requestDirectEntryServiceAccessContext();
 
-  let fromRuntime: LaunchContext | null = null;
+  let fromRuntime: ServiceAccessContext | null = null;
   try {
-    fromRuntime = await requestLaunchContextFromRuntime(launchId);
+    fromRuntime = await requestServiceAccessContextFromRuntime(contextId);
   } catch (error) {
-    throw launchError("launch_context", String((error as Error)?.message || error || "runtime launch context request failed"));
+    throw serviceAccessError("service_access_context", String((error as Error)?.message || error || "runtime service access context request failed"));
   }
   if (fromRuntime) return fromRuntime;
-  throw launchError("launch_context", "launch context is unavailable in the shared runtime");
+  throw serviceAccessError("service_access_context", "service access context is unavailable in the shared runtime");
 }
 
-function isDirectEntryIdleLaunchFailure(error: ManagedLaunchError): boolean {
-  if (!directEntryLaunchAttempted) return false;
+function isDirectEntryIdleServiceAccessFailure(error: ServiceAccessError): boolean {
+  if (!directEntryServiceAccessAttempted) return false;
   const detail = String(error.detail || "").toLowerCase();
   return detail.includes("no security cameras service is available")
-    || detail.includes("launch context is unavailable")
+    || detail.includes("service access context is unavailable")
     || detail.includes("shared browser runtime unavailable")
     || detail.includes("runtime broker unavailable")
     || detail.includes("runtime broker missing")
@@ -3311,24 +3315,24 @@ function sourceIdForTrack(event: RTCTrackEvent): string {
   return transceiverSourceIds[0] || "";
 }
 
-async function connectLiveGrid(context: LaunchContext): Promise<void> {
+async function connectLiveGrid(context: ServiceAccessContext): Promise<void> {
   const display = context.display || {};
-  app.dataset.launchStage = "gateway_signal";
+  app.dataset.serviceAccessStage = "service_signal";
   const requestedSources = normalizeSourceIds(display.sources);
   if (requestedSources.length === 0) {
     cancelScheduledReconnect();
     setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
     setConnectionState("no cameras", "warn");
     setDrawerStatus("No enabled camera sources were advertised by the NVR service.");
-    void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "launch_authorization");
+    void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "service_access_authorization");
     return;
   }
 
-  renderLaunchContextTiles(context);
+  renderServiceAccessContextTiles(context);
 
   setConnectionState("negotiating", "warn");
   setDrawerStatus("Negotiating live preview through the owned gateway.");
-  void reportServiceStatus("negotiating", "Negotiating live preview through the owned gateway.", "gateway_signal");
+  void reportServiceStatus("negotiating", "Negotiating live preview through the owned gateway.", "service_signal");
 
   const rtcConfig: RTCConfiguration = {
     iceServers: buildRtcIceServers(display.iceServers),
@@ -3412,7 +3416,7 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
     candidates: localCandidates,
     sourceIds: requestedSources,
   }).catch((error) => {
-    throw launchError("gateway_signal", String((error as Error)?.message || error || "gateway signaling failed"));
+    throw serviceAccessError("service_signal", String((error as Error)?.message || error || "gateway signaling failed"));
   });
 
   const grantedSources = extractGrantedSources(result, requestedSources);
@@ -3424,12 +3428,12 @@ async function connectLiveGrid(context: LaunchContext): Promise<void> {
 
   const answer = extractAnswerDescription(result);
   const remoteCandidates = extractRemoteCandidates(result);
-  app.dataset.launchStage = "webrtc_media";
+  app.dataset.serviceAccessStage = "webrtc_media";
   await connection.setRemoteDescription(answer).catch((error) => {
-    throw launchError("webrtc_media", String((error as Error)?.message || error || "remote description failed"));
+    throw serviceAccessError("webrtc_media", String((error as Error)?.message || error || "remote description failed"));
   });
   await addRemoteIceCandidates(connection, remoteCandidates).catch((error) => {
-    throw launchError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
+    throw serviceAccessError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
   });
   appendLog("remote answer applied");
   markStartupStage("nvr.answer-applied");
@@ -3447,7 +3451,7 @@ function cancelScheduledReconnect(): void {
 }
 
 function scheduleAutomaticReconnect(reason: string): void {
-  if (!launchContext || scheduledReconnectTimer || reconnectInFlight) return;
+  if (!serviceAccessContext || scheduledReconnectTimer || reconnectInFlight) return;
   reconnectAttemptCount += 1;
   const delayMs = Math.min(5_000, 1_500 + ((reconnectAttemptCount - 1) * 1_000));
   appendLog(`scheduling automatic reconnect in ${delayMs}ms (${reason})`);
@@ -3481,29 +3485,29 @@ function scheduleAutomaticReconnect(reason: string): void {
 
 async function reconnect(): Promise<void> {
   cancelScheduledReconnect();
-  if (!launchContext) {
-    launchContext = await loadLaunchContext();
+  if (!serviceAccessContext) {
+    serviceAccessContext = await loadServiceAccessContext();
   }
-  refreshSummary(launchContext);
-  await connectLiveGrid(launchContext);
+  refreshSummary(serviceAccessContext);
+  await connectLiveGrid(serviceAccessContext);
 }
 
 function handleNonFatalLiveFailure(error: unknown): void {
-  const launchFailure = asManagedLaunchError(error, "webrtc_media");
-  console.error(launchFailure);
+  const serviceAccessFailure = asServiceAccessError(error, "webrtc_media");
+  console.error(serviceAccessFailure);
   closePeerConnection();
-  app.dataset.launchStage = launchFailure.stage;
+  app.dataset.serviceAccessStage = serviceAccessFailure.stage;
   setConnectionState("unavailable", "bad");
-  setDrawerStatus(launchFailure.detail);
+  setDrawerStatus(serviceAccessFailure.detail);
   if (cameraTiles.size > 0) {
     markAllTiles("unavailable", "Live preview unavailable.");
   } else {
-    setGridEmpty("Live Preview Unavailable", launchFailure.detail);
+    setGridEmpty("Live Preview Unavailable", serviceAccessFailure.detail);
   }
-  addNotification("bad", "Live preview unavailable", launchFailure.detail, "app");
-  appendLog(`degraded [${launchFailure.stage}] ${launchFailure.detail}`);
-  void reportServiceStatus("degraded", launchFailure.detail, launchFailure.stage);
-  scheduleAutomaticReconnect(launchFailure.detail);
+  addNotification("bad", "Live preview unavailable", serviceAccessFailure.detail, "app");
+  appendLog(`degraded [${serviceAccessFailure.stage}] ${serviceAccessFailure.detail}`);
+  void reportServiceStatus("degraded", serviceAccessFailure.detail, serviceAccessFailure.stage);
+  scheduleAutomaticReconnect(serviceAccessFailure.detail);
 }
 
 function closePeerConnection(): void {
@@ -3517,18 +3521,18 @@ function closePeerConnection(): void {
 }
 
 function fireAndForgetSessionClose(): void {
-  if (!launchContext || !runtimePort) return;
+  if (!serviceAccessContext || !runtimePort) return;
   try {
     const requestId = randomOpaqueId("nvr-close");
     runtimePort.postMessage({
-      type: "gateway.signal.request",
+      type: BROKER.SERVICE_SIGNAL_REQUEST,
       requestId,
       payload: {
         requestId,
-        gatewayPk: launchContext.gatewayPk,
-        servicePk: launchContext.servicePk,
-        service: launchContext.service || "nvr",
-        launchToken: launchContext.launchToken,
+        gatewayPk: serviceAccessContext.gatewayPk,
+        servicePk: serviceAccessContext.servicePk,
+        service: serviceAccessContext.service || "nvr",
+        serviceCapability: serviceAccessContext.serviceCapability,
         signalType: "session_close",
         payload: { reason: "page_unload" },
       },
@@ -3624,7 +3628,7 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("hashchange", () => syncUiToHash());
 
 window.addEventListener("beforeunload", () => {
-  void reportServiceStatus("idle", "Constitute NVR window closed.", "gateway_signal");
+  void reportServiceStatus("idle", "Constitute NVR window closed.", "service_signal");
   fireAndForgetSessionClose();
   closePeerConnection();
 });
@@ -3643,17 +3647,17 @@ async function bootstrap(): Promise<void> {
   setBootSplash("Connecting");
   setConnectionState("loading", "neutral");
   setDrawerStatus("Preparing Security Cameras.");
-  app.dataset.launchStage = "launch_context";
+  app.dataset.serviceAccessStage = "service_access_context";
   appendLog("bootstrapping managed NVR app surface");
   markStartupStage("nvr.boot.start");
-  void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "launch_context");
+  void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "service_access_context");
 
-  launchContext = await loadLaunchContext();
-  launchContext = await persistLaunchContext(launchContext);
-  appendLog(`launch context loaded for service ${pkLabel(launchContext.servicePk)}`);
-  markStartupStage("nvr.launch-context.loaded");
-  refreshSummary(launchContext);
-  renderLaunchContextTiles(launchContext);
+  serviceAccessContext = await loadServiceAccessContext();
+  serviceAccessContext = await persistServiceAccessContext(serviceAccessContext);
+  appendLog(`service access context loaded for service ${pkLabel(serviceAccessContext.servicePk)}`);
+  markStartupStage("nvr.service-access-context.loaded");
+  refreshSummary(serviceAccessContext);
+  renderServiceAccessContextTiles(serviceAccessContext);
   syncUiToHash();
   dismissBootSplash();
   markStartupStage("nvr.first-paint");
@@ -3670,13 +3674,13 @@ async function bootstrap(): Promise<void> {
 }
 
 void bootstrap().catch((error) => {
-  const launchFailure = asManagedLaunchError(error, "launch_context");
+  const serviceAccessFailure = asServiceAccessError(error, "service_access_context");
   closePeerConnection();
   dismissBootSplash();
-  app.dataset.launchStage = launchFailure.stage;
-  const message = launchFailure.detail;
-  if (isDirectEntryIdleLaunchFailure(launchFailure)) {
-    console.warn(launchFailure);
+  app.dataset.serviceAccessStage = serviceAccessFailure.stage;
+  const message = serviceAccessFailure.detail;
+  if (isDirectEntryIdleServiceAccessFailure(serviceAccessFailure)) {
+    console.warn(serviceAccessFailure);
     setConnectionState("idle", "neutral");
     const lowerMessage = message.toLowerCase();
     const accountRequired = lowerMessage.includes("link an identity") || lowerMessage.includes("device key is not ready");
@@ -3691,15 +3695,15 @@ void bootstrap().catch((error) => {
       : "No Security Cameras service is currently available from this account runtime.");
     setGridEmpty(title, body);
     addNotification("warn", "Security Cameras unavailable", message, "app");
-    appendLog(`idle [${launchFailure.stage}] ${message}`);
-    void reportServiceStatus("idle", message, launchFailure.stage);
+    appendLog(`idle [${serviceAccessFailure.stage}] ${message}`);
+    void reportServiceStatus("idle", message, serviceAccessFailure.stage);
     return;
   }
-  console.error(launchFailure);
+  console.error(serviceAccessFailure);
   setConnectionState("error", "bad");
-  setDrawerStatus(launchFailure.detail);
-  setGridEmpty("Launch Failed", `${launchFailure.stage}: ${message}`);
-  addNotification("bad", "Managed launch failed", message, "app");
-  appendLog(`fatal [${launchFailure.stage}] ${message}`);
-  void reportServiceStatus("error", message, launchFailure.stage);
+  setDrawerStatus(serviceAccessFailure.detail);
+  setGridEmpty("Service Access Failed", `${serviceAccessFailure.stage}: ${message}`);
+  addNotification("bad", "Service access failed", message, "app");
+  appendLog(`fatal [${serviceAccessFailure.stage}] ${message}`);
+  void reportServiceStatus("error", message, serviceAccessFailure.stage);
 });

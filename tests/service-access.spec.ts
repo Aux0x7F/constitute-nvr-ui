@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-type LaunchContext = {
-  launchId: string;
+type ServiceAccessContext = {
+  contextId: string;
   app: string;
   repo: string;
   identityId: string;
@@ -10,7 +10,7 @@ type LaunchContext = {
   gatewayPk: string;
   servicePk: string;
   service: string;
-  launchToken: string;
+  serviceCapability: string;
   display?: {
     serviceLabel?: string;
     serviceVersion?: string;
@@ -44,10 +44,10 @@ type LaunchContext = {
 };
 
 type RuntimeMockConfig = {
-  launchContext: LaunchContext | null;
-  brokerLaunchContext?: LaunchContext | null;
-  failDirectLaunchMessage?: string;
-  directLaunchDelayMs?: number;
+  serviceAccessContext: ServiceAccessContext | null;
+  brokerServiceAccessContext?: ServiceAccessContext | null;
+  failDirectServiceAccessMessage?: string;
+  directServiceAccessDelayMs?: number;
   managedAppliances?: {
     owned?: Array<Record<string, unknown>>;
     granted?: Array<Record<string, unknown>>;
@@ -84,10 +84,10 @@ type RuntimeMockConfig = {
   };
 };
 
-function buildLaunchContext(overrides: Partial<LaunchContext> = {}): LaunchContext {
+function buildServiceAccessContext(overrides: Partial<ServiceAccessContext> = {}): ServiceAccessContext {
   const now = Date.now();
   return {
-    launchId: "launch-test-001",
+    contextId: "service-access-test-001",
     app: "Constitute NVR",
     repo: "constitute-nvr-ui",
     identityId: "identity-test-001",
@@ -95,7 +95,7 @@ function buildLaunchContext(overrides: Partial<LaunchContext> = {}): LaunchConte
     gatewayPk: "gatewaypk0123456789abcdef",
     servicePk: "servicepk0123456789abcdef",
     service: "nvr",
-    launchToken: "launch-token-001",
+    serviceCapability: "service-capability-001",
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -135,7 +135,7 @@ function buildLaunchContext(overrides: Partial<LaunchContext> = {}): LaunchConte
   };
 }
 
-function buildNvrManagedAppliances(context = buildLaunchContext()) {
+function buildNvrManagedAppliances(context = buildServiceAccessContext()) {
   const serviceRecord = {
     devicePk: context.servicePk,
     deviceLabel: context.display?.serviceLabel || "Lab NVR",
@@ -164,7 +164,7 @@ function buildNvrManagedAppliances(context = buildLaunchContext()) {
 }
 
 async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
-  launchContext: buildLaunchContext(),
+  serviceAccessContext: buildServiceAccessContext(),
   diagnostics: false,
   expireOfferPreflight: false,
   ownerInventory: false,
@@ -176,11 +176,11 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
       window.localStorage.setItem("constitute.nvr.diagnostics", "1");
     }
 
-    const launchId = String(runtimeConfig.launchContext?.launchId || "launch-test-001");
-    let activeLaunchId = launchId;
-    const initialContext = runtimeConfig.launchContext ? structuredClone(runtimeConfig.launchContext) : null;
-    let currentLaunchToken = String(initialContext?.launchToken || "launch-token-001");
-    let launchRefreshCount = 0;
+    const contextId = String(runtimeConfig.serviceAccessContext?.contextId || "service-access-test-001");
+    let activeContextId = contextId;
+    const initialContext = runtimeConfig.serviceAccessContext ? structuredClone(runtimeConfig.serviceAccessContext) : null;
+    let currentServiceCapability = String(initialContext?.serviceCapability || "service-capability-001");
+    let serviceAccessRefreshCount = 0;
     let sessionCloseCount = 0;
     let offerRequestCount = 0;
     let expiredOfferOnce = false;
@@ -188,6 +188,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
     let adminRequestCount = 0;
     let failNextAdmin = false;
     const workerPorts = new Set<MockMessagePort>();
+    const sharedWorkerConstructors: Array<{ url: string; type: string; name: string }> = [];
     let lastPeerConnection: MockRTCPeerConnection | null = null;
     let currentManagedAppliances = runtimeConfig.managedAppliances || {
       owned: [],
@@ -305,14 +306,14 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
     }
 
     const runtimeState = {
-      launchContexts: new Map<string, LaunchContext>(),
+      serviceAccessContexts: new Map<string, ServiceAccessContext>(),
       services: {} as Record<string, unknown>,
       shell: runtimeConfig.initialShell || null as Record<string, unknown> | null,
       resourceNames: {} as Record<string, string>,
     };
 
     if (initialContext) {
-      runtimeState.launchContexts.set(initialContext.launchId, structuredClone(initialContext));
+      runtimeState.serviceAccessContexts.set(initialContext.contextId, structuredClone(initialContext));
       runtimeState.resourceNames[initialContext.gatewayPk] = "Lab Gateway";
       runtimeState.resourceNames[initialContext.servicePk] = String(initialContext.display?.serviceLabel || "Lab NVR");
       runtimeState.resourceNames[initialContext.identityId] = "tester";
@@ -327,7 +328,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
         managedAppliances: currentManagedAppliances,
         resourceNames: runtimeState.resourceNames,
         managedServiceIssue: null,
-        launchContextCount: runtimeState.launchContexts.size,
+        serviceAccessContextCount: runtimeState.serviceAccessContexts.size,
       };
     }
 
@@ -401,24 +402,24 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           return;
         }
 
-        if (type === "launchContext.get") {
-          const requestedLaunchId = String(message.launchId || "");
+        if (type === "serviceAccessContext.get") {
+          const requestedContextId = String(message.contextId || "");
           this.emit(runtimeResponse(
             requestId,
-            runtimeState.launchContexts.get(requestedLaunchId) || null,
-            "launchContext.get",
+            runtimeState.serviceAccessContexts.get(requestedContextId) || null,
+            "serviceAccessContext.get",
           ));
           return;
         }
 
-        if (type === "launchContext.put") {
-          const context = (message.context && typeof message.context === "object") ? message.context as LaunchContext : null;
-          if (context?.launchId) {
-            runtimeState.launchContexts.set(context.launchId, structuredClone(context));
-            currentLaunchToken = context.launchToken;
-            activeLaunchId = context.launchId;
+        if (type === "serviceAccessContext.put") {
+          const context = (message.context && typeof message.context === "object") ? message.context as ServiceAccessContext : null;
+          if (context?.contextId) {
+            runtimeState.serviceAccessContexts.set(context.contextId, structuredClone(context));
+            currentServiceCapability = context.serviceCapability;
+            activeContextId = context.contextId;
           }
-          this.emit(runtimeResponse(requestId, context, "launchContext.put"));
+          this.emit(runtimeResponse(requestId, context, "serviceAccessContext.put"));
           this.emit({
             type: "runtime.snapshot",
             buildId: "runtime-2.9",
@@ -427,41 +428,41 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           return;
         }
 
-        if (type === "gateway.launch.request") {
-          launchRefreshCount += 1;
+        if (type === "gateway.serviceAccess.request") {
+          serviceAccessRefreshCount += 1;
           const respond = () => {
-            if (runtimeConfig.failDirectLaunchMessage) {
-              this.emit(runtimeError(requestId, runtimeConfig.failDirectLaunchMessage, "gateway.launch.request"));
+            if (runtimeConfig.failDirectServiceAccessMessage) {
+              this.emit(runtimeError(requestId, runtimeConfig.failDirectServiceAccessMessage, "gateway.serviceAccess.request"));
               return;
             }
-            const context = runtimeState.launchContexts.get(launchId);
-            const directContext = runtimeConfig.brokerLaunchContext || null;
+            const context = runtimeState.serviceAccessContexts.get(contextId);
+            const directContext = runtimeConfig.brokerServiceAccessContext || null;
             const selectedContext = context || directContext;
             if (!selectedContext) {
-              this.emit(runtimeError(requestId, "launch context unavailable", "gateway.launch.request"));
+              this.emit(runtimeError(requestId, "service access context unavailable", "gateway.serviceAccess.request"));
               return;
             }
-            currentLaunchToken = `launch-token-${launchRefreshCount + 1}`;
-            const refreshedContext: LaunchContext = {
+            currentServiceCapability = `service-capability-${serviceAccessRefreshCount + 1}`;
+            const refreshedContext: ServiceAccessContext = {
               ...selectedContext,
-              launchToken: currentLaunchToken,
+              serviceCapability: currentServiceCapability,
               createdAt: Date.now(),
               expiresAt: Date.now() + 60_000,
             };
-            if (context) runtimeState.launchContexts.set(launchId, refreshedContext);
+            if (context) runtimeState.serviceAccessContexts.set(contextId, refreshedContext);
             this.emit(runtimeResponse(requestId, {
               requestId,
               gatewayPk: refreshedContext.gatewayPk,
               servicePk: refreshedContext.servicePk,
               service: refreshedContext.service,
               capability: "nvr.view",
-              launchToken: refreshedContext.launchToken,
+              serviceCapability: refreshedContext.serviceCapability,
               display: refreshedContext.display,
               expiresAt: refreshedContext.expiresAt,
               ts: Date.now(),
-            }, "gateway.launch.request"));
+            }, "gateway.serviceAccess.request"));
           };
-          window.setTimeout(respond, Math.max(0, Number(runtimeConfig.directLaunchDelayMs || 0)));
+          window.setTimeout(respond, Math.max(0, Number(runtimeConfig.directServiceAccessDelayMs || 0)));
           return;
         }
 
@@ -482,20 +483,20 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           return;
         }
 
-        if (type === "gateway.signal.request") {
+        if (type === "gateway.serviceSignal.request") {
           const root = (message.payload && typeof message.payload === "object")
             ? message.payload as Record<string, unknown>
             : {};
           const signalType = String(root.signalType || "");
           const signalRequestId = String(root.requestId || requestId || "signal-request");
-          const context = runtimeState.launchContexts.get(activeLaunchId);
+          const context = runtimeState.serviceAccessContexts.get(activeContextId);
           if (!context) {
-            this.emit(runtimeError(requestId, "launch context unavailable", "gateway.signal.request"));
+            this.emit(runtimeError(requestId, "service access context unavailable", "gateway.serviceSignal.request"));
             return;
           }
           if (runtimeConfig.expireOfferPreflight && signalType === "offer" && !expiredOfferOnce) {
             expiredOfferOnce = true;
-            this.emit(runtimeError(requestId, "launch token expired", "gateway.signal.request"));
+            this.emit(runtimeError(requestId, "service capability expired", "gateway.serviceSignal.request"));
             return;
           }
           if (signalType === "offer") {
@@ -503,7 +504,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
             const respond = () => {
               if (remainingOfferFailures > 0) {
                 remainingOfferFailures -= 1;
-                this.emit(runtimeError(requestId, "gateway signaling failed", "gateway.signal.request"));
+                this.emit(runtimeError(requestId, "gateway signaling failed", "gateway.serviceSignal.request"));
                 return;
               }
               this.emit(runtimeResponse(requestId, {
@@ -518,7 +519,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                     sources: context.display?.sources || [],
                   },
                 },
-              }, "gateway.signal.request"));
+              }, "gateway.serviceSignal.request"));
             };
             const delayMs = Math.max(0, Number(runtimeConfig.offerDelayMs || 0));
             if (delayMs > 0) {
@@ -541,7 +542,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
             const respond = () => {
               if (failNextAdmin) {
                 failNextAdmin = false;
-                this.emit(runtimeError(requestId, "inventory unavailable", "gateway.signal.request"));
+                this.emit(runtimeError(requestId, "inventory unavailable", "gateway.serviceSignal.request"));
                 return;
               }
               if (adminAction === "apply_camera_device_config") {
@@ -608,7 +609,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                         : null,
                     },
                   },
-                }, "gateway.signal.request"));
+                }, "gateway.serviceSignal.request"));
                 return;
               }
               this.emit(runtimeResponse(requestId, {
@@ -669,7 +670,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
                         },
                   },
                 },
-              }, "gateway.signal.request"));
+              }, "gateway.serviceSignal.request"));
             };
             const delayMs = adminAction === "apply_camera_device_config"
               ? Math.max(0, Number(runtimeConfig.applyDelayMs ?? runtimeConfig.adminDelayMs ?? 0))
@@ -689,7 +690,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
             requestId: signalRequestId,
             ok: true,
             result: { ok: true },
-          }, "gateway.signal.request"));
+          }, "gateway.serviceSignal.request"));
         }
       }
     }
@@ -697,7 +698,12 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
     class MockSharedWorker {
       port: MockMessagePort;
 
-      constructor() {
+      constructor(url?: string | URL, options?: SharedWorkerOptions) {
+        sharedWorkerConstructors.push({
+          url: String(url || ""),
+          type: String(options?.type || ""),
+          name: String(options?.name || ""),
+        });
         this.port = new MockMessagePort();
         workerPorts.add(this.port);
       }
@@ -747,20 +753,23 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
     Object.defineProperty(window, "__runtimeProbe", {
       configurable: true,
       value: {
-        get launchRefreshCount() {
-          return launchRefreshCount;
+        get serviceAccessRefreshCount() {
+          return serviceAccessRefreshCount;
         },
         get sessionCloseCount() {
           return sessionCloseCount;
         },
-        get currentLaunchToken() {
-          return currentLaunchToken;
+        get currentServiceCapability() {
+          return currentServiceCapability;
         },
         get adminRequestCount() {
           return adminRequestCount;
         },
         get offerRequestCount() {
           return offerRequestCount;
+        },
+        get sharedWorkerConstructors() {
+          return sharedWorkerConstructors.slice();
         },
         failNextAdmin() {
           failNextAdmin = true;
@@ -787,10 +796,16 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
   });
 }
 
-test("boots from runtime launch context and renders a live camera grid", async ({ page }) => {
+test("boots from runtime service access context and renders a live camera grid", async ({ page }) => {
   await installRuntimeHarness(page);
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
+  await expect.poll(async () => page.evaluate(() => window.__runtimeProbe.sharedWorkerConstructors.length)).toBeGreaterThan(0);
+  const workerConstructors = await page.evaluate(() => window.__runtimeProbe.sharedWorkerConstructors);
+  expect(workerConstructors[0]).toMatchObject({
+    type: "module",
+    name: "constitute-account-runtime-runtime-2.9",
+  });
   await expect(page.locator("#appName")).toHaveText("Constitute NVR");
   await expect(page.locator("#liveView .panelHeader h2")).toHaveText("Cameras");
   await expect(page.locator("#subtitle")).toHaveCount(0);
@@ -804,29 +819,29 @@ test("boots from runtime launch context and renders a live camera grid", async (
 
 test("boots live preview without waiting for slow camera administration refresh", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext(),
+    serviceAccessContext: buildServiceAccessContext(),
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
     adminDelayMs: 15_000,
   });
 
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraTile")).toHaveCount(2);
   await expect(page.locator("#bootSplash")).toHaveCount(0);
 });
 
-test("dismisses the splash after launch context while gateway signaling is still pending", async ({ page }) => {
+test("dismisses the splash after service access context while gateway signaling is still pending", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext(),
+    serviceAccessContext: buildServiceAccessContext(),
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: false,
     offerDelayMs: 15_000,
   });
 
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraTile")).toHaveCount(2);
   await expect(page.locator("#bootSplash")).toHaveCount(0);
@@ -834,16 +849,16 @@ test("dismisses the splash after launch context while gateway signaling is still
   await expect(page.locator(".cameraStatusDot-live")).toHaveCount(0);
 });
 
-test("keeps the page open when the first live reconnect attempt fails after launch context", async ({ page }) => {
+test("keeps the page open when the first live reconnect attempt fails after service access context", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext(),
+    serviceAccessContext: buildServiceAccessContext(),
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: false,
     failOfferCount: 1,
   });
 
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator("#bootSplash")).toHaveCount(0);
   await expect(page.locator(".cameraTile")).toHaveCount(2);
@@ -861,7 +876,7 @@ test("keeps the page open when the first live reconnect attempt fails after laun
 
 test("reconnects live preview automatically after the peer connection drops", async ({ page }) => {
   await installRuntimeHarness(page);
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraTile")).toHaveCount(2);
   await expect.poll(async () => {
@@ -893,13 +908,13 @@ test("reconnects live preview automatically after the peer connection drops", as
 
 test("binds each preview tile to its own track even when remote tracks share one MediaStream", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext(),
+    serviceAccessContext: buildServiceAccessContext(),
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: false,
     sharedTrackStream: true,
   });
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraStatusDot-live")).toHaveCount(2);
   const trackBinding = await page.evaluate(() => {
@@ -919,16 +934,16 @@ test("binds each preview tile to its own track even when remote tracks share one
 
 test("does not expose opener-return actions in the shared account center", async ({ page }) => {
   await installRuntimeHarness(page);
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await page.getByRole("button", { name: "Menu" }).click();
   await page.locator("#accountRailButton").click();
   await expect(page.getByRole("button", { name: "Return To Opener" })).toHaveCount(0);
 });
 
-test("refreshes launch token through the shared runtime before offer", async ({ page }) => {
+test("refreshes service capability through the shared runtime before offer", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext({
+    serviceAccessContext: buildServiceAccessContext({
       expiresAt: Date.now() - 1_000,
     }),
     diagnostics: true,
@@ -936,24 +951,24 @@ test("refreshes launch token through the shared runtime before offer", async ({ 
     ownerInventory: false,
   });
 
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraTile")).toHaveCount(2);
   await expect.poll(async () => {
     return await page.evaluate(() => {
       const probe = (window as Window & {
-        __runtimeProbe?: { launchRefreshCount: number; currentLaunchToken: string };
+        __runtimeProbe?: { serviceAccessRefreshCount: number; currentServiceCapability: string };
       }).__runtimeProbe;
-      return probe ? `${probe.launchRefreshCount}:${probe.currentLaunchToken}` : "0:";
+      return probe ? `${probe.serviceAccessRefreshCount}:${probe.currentServiceCapability}` : "0:";
     });
-  }).toBe("1:launch-token-2");
+  }).toBe("1:service-capability-2");
 });
 
-test("direct app entry launches an available NVR service from the shared runtime", async ({ page }) => {
-  const context = buildLaunchContext();
+test("direct app entry opens an available NVR service from the shared runtime", async ({ page }) => {
+  const context = buildServiceAccessContext();
   await installRuntimeHarness(page, {
-    launchContext: null,
-    brokerLaunchContext: context,
+    serviceAccessContext: null,
+    brokerServiceAccessContext: context,
     managedAppliances: buildNvrManagedAppliances(context),
     diagnostics: false,
     expireOfferPreflight: false,
@@ -967,18 +982,18 @@ test("direct app entry launches an available NVR service from the shared runtime
   await expect.poll(async () => {
     return await page.evaluate(() => {
       const probe = (window as Window & {
-        __runtimeProbe?: { launchRefreshCount: number; currentLaunchToken: string };
+        __runtimeProbe?: { serviceAccessRefreshCount: number; currentServiceCapability: string };
       }).__runtimeProbe;
-      return probe ? `${probe.launchRefreshCount}:${probe.currentLaunchToken}` : "0:";
+      return probe ? `${probe.serviceAccessRefreshCount}:${probe.currentServiceCapability}` : "0:";
     });
-  }).toBe("1:launch-token-2");
+  }).toBe("1:service-capability-2");
 });
 
 test("direct app entry hydrates account bridge before deciding service availability", async ({ page }) => {
-  const context = buildLaunchContext();
+  const context = buildServiceAccessContext();
   await installRuntimeHarness(page, {
-    launchContext: null,
-    brokerLaunchContext: context,
+    serviceAccessContext: null,
+    brokerServiceAccessContext: context,
     bridgeManagedAppliances: buildNvrManagedAppliances(context),
     bridgeHydrationDelayMs: 150,
     diagnostics: false,
@@ -994,18 +1009,18 @@ test("direct app entry hydrates account bridge before deciding service availabil
   await expect.poll(async () => {
     return await page.evaluate(() => {
       const probe = (window as Window & {
-        __runtimeProbe?: { launchRefreshCount: number; currentLaunchToken: string };
+        __runtimeProbe?: { serviceAccessRefreshCount: number; currentServiceCapability: string };
       }).__runtimeProbe;
-      return probe ? `${probe.launchRefreshCount}:${probe.currentLaunchToken}` : "0:";
+      return probe ? `${probe.serviceAccessRefreshCount}:${probe.currentServiceCapability}` : "0:";
     });
-  }).toBe("1:launch-token-2");
+  }).toBe("1:service-capability-2");
 });
 
 test("direct app entry waits out the account bridge settle window before treating identity as unlinked", async ({ page }) => {
-  const context = buildLaunchContext();
+  const context = buildServiceAccessContext();
   await installRuntimeHarness(page, {
-    launchContext: null,
-    brokerLaunchContext: context,
+    serviceAccessContext: null,
+    brokerServiceAccessContext: context,
     initialShell: {
       identity: {
         linked: false,
@@ -1028,12 +1043,12 @@ test("direct app entry waits out the account bridge settle window before treatin
 
 test("direct app entry waits past the old refresh timeout for first session authorization", async ({ page }) => {
   test.setTimeout(45_000);
-  const context = buildLaunchContext();
+  const context = buildServiceAccessContext();
   await installRuntimeHarness(page, {
-    launchContext: null,
-    brokerLaunchContext: context,
+    serviceAccessContext: null,
+    brokerServiceAccessContext: context,
     managedAppliances: buildNvrManagedAppliances(context),
-    directLaunchDelayMs: 21_000,
+    directServiceAccessDelayMs: 21_000,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: false,
@@ -1041,15 +1056,15 @@ test("direct app entry waits past the old refresh timeout for first session auth
 
   await page.goto("/");
 
-  await expect(page.locator(".emptyState strong")).toHaveText("Launching Security Cameras");
-  await expect(page.locator("#connStateText")).toHaveText("launching");
+  await expect(page.locator(".emptyState strong")).toHaveText("Opening Security Cameras");
+  await expect(page.locator("#connStateText")).toHaveText("opening");
   await expect(page.locator(".cameraTile")).toHaveCount(2, { timeout: 30_000 });
   await expect(page.locator("#connStateText")).toHaveText("live");
 });
 
 test("direct app entry stays inside the NVR app when no service is available", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: null,
+    serviceAccessContext: null,
     bridgeManagedAppliances: {
       owned: [],
       granted: [],
@@ -1065,17 +1080,17 @@ test("direct app entry stays inside the NVR app when no service is available", a
   await expect(page.locator(".emptyState strong")).toHaveText("No Security Cameras Service");
   await expect(page.locator(".emptyState p")).toContainText("this app will open it directly");
   await expect(page.locator(".emptyState p")).not.toContainText("constitute-gateway-ui");
-  await expect(page.locator(".emptyState p")).not.toContainText("managed launch URL");
+  await expect(page.locator(".emptyState p")).not.toContainText("service access URL");
   await expect(page.locator("#connStateText")).toHaveText("idle");
 });
 
-test("direct app entry treats transient gateway launch failure as recoverable app state", async ({ page }) => {
-  const context = buildLaunchContext();
+test("direct app entry treats transient gateway service access failure as recoverable app state", async ({ page }) => {
+  const context = buildServiceAccessContext();
   await installRuntimeHarness(page, {
-    launchContext: null,
-    brokerLaunchContext: context,
+    serviceAccessContext: null,
+    brokerServiceAccessContext: context,
     managedAppliances: buildNvrManagedAppliances(context),
-    failDirectLaunchMessage: "transient gateway launch failure",
+    failDirectServiceAccessMessage: "transient gateway service access failure",
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: false,
@@ -1083,22 +1098,22 @@ test("direct app entry treats transient gateway launch failure as recoverable ap
 
   await page.goto("/");
 
-  await expect(page.locator(".emptyState strong")).toHaveText("Launching Security Cameras");
+  await expect(page.locator(".emptyState strong")).toHaveText("Opening Security Cameras");
   await expect(page.locator(".emptyState p")).toContainText("Resolving an account-authorized camera session");
-  await expect(page.locator("#connStateText")).toHaveText("launching");
+  await expect(page.locator("#connStateText")).toHaveText("opening");
   await expect.poll(async () => {
     return await page.evaluate(() => {
       const probe = (window as Window & {
-        __runtimeProbe?: { launchRefreshCount: number };
+        __runtimeProbe?: { serviceAccessRefreshCount: number };
       }).__runtimeProbe;
-      return probe?.launchRefreshCount || 0;
+      return probe?.serviceAccessRefreshCount || 0;
     });
   }).toBeGreaterThan(1);
 });
 
 test("settings use NVR and Cameras tabs only", async ({ page }) => {
   await installRuntimeHarness(page);
-  await page.goto("/#launch=launch-test-001&activity=settings");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings");
 
   await expect(page.getByRole("button", { name: "NVR" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cameras" })).toBeVisible();
@@ -1108,7 +1123,7 @@ test("settings use NVR and Cameras tabs only", async ({ page }) => {
 
 test("camera settings use site time policy and do not expose per-camera time controls", async ({ page }) => {
   await installRuntimeHarness(page, {
-    launchContext: buildLaunchContext(),
+    serviceAccessContext: buildServiceAccessContext(),
     ownerInventory: true,
     cameraNetwork: {
       managed: true,
@@ -1125,7 +1140,7 @@ test("camera settings use site time policy and do not expose per-camera time con
     },
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
   await expect(cameraCard).toBeVisible();
@@ -1142,7 +1157,7 @@ test("camera settings use site time policy and do not expose per-camera time con
 });
 
 test("xm camera settings show XM driver truth and no PTZ fallback rows", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1175,11 +1190,11 @@ test("xm camera settings show XM driver truth and no PTZ fallback rows", async (
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     ownerInventory: true,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-xm");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-xm");
 
   const card = page.locator(".cameraListItem.expanded[data-source-id='cam-xm']");
   await expect(card).toBeVisible();
@@ -1191,7 +1206,7 @@ test("xm camera settings show XM driver truth and no PTZ fallback rows", async (
 });
 
 test("temporarily hides PTZ controls while PTZ is disabled", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1221,13 +1236,13 @@ test("temporarily hides PTZ controls while PTZ is disabled", async ({ page }) =>
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: true,
     expireOfferPreflight: false,
     ownerInventory: true,
   });
 
-  await page.goto("/#launch=launch-test-001");
+  await page.goto("/#serviceAccess=service-access-test-001");
 
   await expect(page.locator(".cameraTile")).toHaveCount(1);
   const ptzButton = page.getByRole("button", { name: "PTZ" });
@@ -1236,7 +1251,7 @@ test("temporarily hides PTZ controls while PTZ is disabled", async ({ page }) =>
 });
 
 test("camera name editing preserves focus and keeps overlay text linked by default", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1266,13 +1281,13 @@ test("camera name editing preserves focus and keeps overlay text linked by defau
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const nameInput = page.locator(".cameraSettingsTray input[data-field='displayName']");
   const overlayInput = page.locator(".cameraSettingsTray input[data-field='overlayText']");
@@ -1289,7 +1304,7 @@ test("camera name editing preserves focus and keeps overlay text linked by defau
 });
 
 test("runtime snapshots do not redraw the active camera settings card", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1319,13 +1334,13 @@ test("runtime snapshots do not redraw the active camera settings card", async ({
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
   const nameInput = cameraCard.locator(".cameraSettingsTray input[data-field='displayName']");
@@ -1346,7 +1361,7 @@ test("runtime snapshots do not redraw the active camera settings card", async ({
 });
 
 test("camera settings stay visible while inventory refresh is in flight", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1376,14 +1391,14 @@ test("camera settings stay visible while inventory refresh is in flight", async 
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
     adminDelayMs: 15_000,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   await expect(page.locator(".cameraListItem.expanded[data-source-id='cam-front']")).toBeVisible();
   await expect(page.locator(".cameraSettingsTray")).toBeVisible();
@@ -1392,7 +1407,7 @@ test("camera settings stay visible while inventory refresh is in flight", async 
 });
 
 test("keeps the expanded camera card mounted when inventory refresh fails", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1422,13 +1437,13 @@ test("keeps the expanded camera card mounted when inventory refresh fails", asyn
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
   const tray = cameraCard.locator(".cameraSettingsTray");
@@ -1450,7 +1465,7 @@ test("keeps the expanded camera card mounted when inventory refresh fails", asyn
 });
 
 test("apply camera settings stays mounted while the request is pending", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1480,14 +1495,14 @@ test("apply camera settings stays mounted while the request is pending", async (
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
     applyDelayMs: 5_000,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
   const nameInput = cameraCard.locator(".cameraSettingsTray input[data-field='displayName']");
@@ -1512,7 +1527,7 @@ test("apply camera settings stays mounted while the request is pending", async (
 });
 
 test("camera card title follows observed validated name when mounted displayName is stale", async ({ page }) => {
-  const context = buildLaunchContext({
+  const context = buildServiceAccessContext({
     display: {
       serviceLabel: "Lab NVR",
       serviceVersion: "0.2.0",
@@ -1542,14 +1557,14 @@ test("camera card title follows observed validated name when mounted displayName
   });
 
   await installRuntimeHarness(page, {
-    launchContext: context,
+    serviceAccessContext: context,
     diagnostics: false,
     expireOfferPreflight: false,
     ownerInventory: true,
     staleMountedDisplayNameAfterApply: true,
   });
 
-  await page.goto("/#launch=launch-test-001&activity=settings&settings=cameras&camera=cam-front");
+  await page.goto("/#serviceAccess=service-access-test-001&activity=settings&settings=cameras&camera=cam-front");
 
   const cameraCard = page.locator(".cameraListItem.expanded[data-source-id='cam-front']");
   const nameInput = cameraCard.locator(".cameraSettingsTray input[data-field='displayName']");
