@@ -5,6 +5,7 @@
 
 It is a Pages-hosted managed app surface.
 It is not a transport/gateway replacement and does not host identity authority.
+It is also not the future Physical Security product app; `constitute-physec` should consume NVR projections later for broader Security workflows.
 
 ## Boundaries
 - Identity/session/grant authority: `constitute-account`
@@ -34,6 +35,8 @@ Current managed surface:
 - the shared account rail opens account actions only; app-specific opener-return controls are not part of the current shared contract
 
 Advanced configuration remains out of scope for this slice except navigation placeholders.
+
+Future Physical Security scope belongs in `constitute-physec`, including locations, armed modes, incidents, sensor fusion, and response views. NVR UI may continue to expose camera/service administration and live camera operation.
 
 ## Media Direction
 - WebRTC
