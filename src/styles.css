@@ -363,8 +363,8 @@ textarea {
 .cameraActionButton {
   border-radius: 999px;
   padding: 0.45rem 0.75rem;
-  backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   background: rgba(8, 13, 23, 0.72);
 }
 
