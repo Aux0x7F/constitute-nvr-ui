@@ -321,7 +321,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
 
     function runtimeSnapshot() {
       return {
-        buildId: "runtime-2.9",
+        buildId: "runtime-2.12",
         updatedAt: Date.now(),
         shell: runtimeState.shell,
         services: runtimeState.services,
@@ -379,7 +379,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
         if (type === "runtime.attach") {
           this.emit({
             type: "runtime.attached",
-            buildId: "runtime-2.9",
+            buildId: "runtime-2.12",
             snapshot: runtimeSnapshot(),
           });
           return;
@@ -391,7 +391,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           this.emit(runtimeResponse(requestId, runtimeSnapshot(), "runtime.status.put"));
           this.emit({
             type: "runtime.snapshot",
-            buildId: "runtime-2.9",
+            buildId: "runtime-2.12",
             snapshot: runtimeSnapshot(),
           });
           return;
@@ -422,7 +422,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           this.emit(runtimeResponse(requestId, context, "serviceAccessContext.put"));
           this.emit({
             type: "runtime.snapshot",
-            buildId: "runtime-2.9",
+            buildId: "runtime-2.12",
             snapshot: runtimeSnapshot(),
           });
           return;
@@ -729,7 +729,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           for (const port of workerPorts) {
             port.dispatch({
               type: "runtime.snapshot",
-              buildId: "runtime-2.9",
+              buildId: "runtime-2.12",
               snapshot: runtimeSnapshot(),
             });
           }
@@ -784,7 +784,7 @@ async function installRuntimeHarness(page: Page, config: RuntimeMockConfig = {
           for (const port of workerPorts) {
             port.dispatch({
               type: "runtime.snapshot",
-              buildId: "runtime-2.9",
+              buildId: "runtime-2.12",
               snapshot: runtimeSnapshot(),
             });
           }
@@ -804,7 +804,7 @@ test("boots from runtime service access context and renders a live camera grid",
   const workerConstructors = await page.evaluate(() => window.__runtimeProbe.sharedWorkerConstructors);
   expect(workerConstructors[0]).toMatchObject({
     type: "module",
-    name: "constitute-account-runtime-runtime-2.9",
+    name: "constitute-account-runtime-runtime-2.12",
   });
   await expect(page.locator("#appName")).toHaveText("Constitute NVR");
   await expect(page.locator("#liveView .panelHeader h2")).toHaveText("Cameras");
