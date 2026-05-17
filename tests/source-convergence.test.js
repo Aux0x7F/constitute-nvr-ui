@@ -127,6 +127,8 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   assert.match(main, /nvrSurfaceModules/);
   assert.match(modules, /nvrSurfaceModuleRegistry/);
   assert.match(modules, /requireNvrSurfaceModuleClaim/);
+  assert.match(modules, /requireNvrSurfaceModuleBinding/);
+  assert.match(modules, /const implementation = posture\.implementation\?\.implementation/);
   assert.match(main, /activeRuntimeClientModuleRef/);
   assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);

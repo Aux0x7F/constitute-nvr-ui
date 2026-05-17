@@ -105,24 +105,38 @@ export function requireNvrSurfaceModuleClaim(role: string, options: { moduleRef:
   return posture.claim;
 }
 
+export function requireNvrSurfaceModuleBinding(role: string, options: { moduleRef: string; primitiveRef?: string }) {
+  const posture = surfaceModuleRegistryPosture(nvrSurfaceModuleRegistry, nvrSurfaceApp, role, options);
+  const implementation = posture.implementation?.implementation;
+  if (posture.state !== "ready" || !posture.claim || !implementation) {
+    throw new Error(`NVR surface module implementation unavailable: ${posture.blockedReason} ${role} ${options.moduleRef}`.trim());
+  }
+  return Object.freeze({
+    ...posture.claim,
+    implementationRef: posture.implementationRef,
+    fallbackTried: posture.fallbackTried,
+    implementation,
+  });
+}
+
 export const nvrSurfaceModules = Object.freeze({
-  runtimeClient: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
+  runtimeClient: requireNvrSurfaceModuleBinding(SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
     moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
     primitiveRef: "runtime.attach",
   }),
-  projectionModel: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL, {
+  projectionModel: requireNvrSurfaceModuleBinding(SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL, {
     moduleRef: "constitute-nvr-ui/nvr-projection-model@0.2.0",
     primitiveRef: "projection.materialization",
   }),
-  platformAdapter: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
+  platformAdapter: requireNvrSurfaceModuleBinding(SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
     moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
     primitiveRef: "media.transport.path",
   }),
-  serviceSurfaceAdapter: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
+  serviceSurfaceAdapter: requireNvrSurfaceModuleBinding(SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
     moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
     primitiveRef: "stream.intent",
   }),
-  productView: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW, {
+  productView: requireNvrSurfaceModuleBinding(SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW, {
     moduleRef: "constitute-nvr-ui/product-view@0.2.0",
     primitiveRef: "runtime.posture.render",
   }),
