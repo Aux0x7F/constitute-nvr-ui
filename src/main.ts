@@ -570,6 +570,7 @@ let runtimeClient: ReturnType<typeof createRuntimeSurfaceClient> | null = null;
 let runtimePort: MessagePort | null = null;
 let runtimeAttached = false;
 let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
+let runtimeSnapshotConsumerFloor: Record<string, unknown> | null = null;
 let runtimeServiceContext: RuntimeServiceContext | null = null;
 let directEntryRepairTimer = 0;
 let directEntryRepairInFlight: Promise<void> | null = null;
@@ -1403,6 +1404,9 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
         runtimeAttached = Boolean(runtimePort);
         absorbRuntimeSnapshot(snapshot);
         refreshRuntimeProjectionLabels();
+      },
+      onConsumerFloor: (floor) => {
+        runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
       },
       onAttachTimeout: () => {
         runtimeAttached = false;
@@ -3953,17 +3957,28 @@ function renderTileStreamStatus(sourceId: string): void {
 
 function renderProjectionSyncSummary(): string {
   const records = Object.entries(nvrProjectionState.projectionRecords);
-  if (records.length === 0) return "";
+  const rows = records.map(([channelId, record]) => {
+    const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
+    const state = String(freshness.state || "fresh").trim() || "fresh";
+    const revision = String(record.revision || "").trim();
+    const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
+    return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
+  });
+  if (runtimeSnapshotConsumerFloor) {
+    rows.push([
+      "runtime.floor",
+      [
+        String(runtimeSnapshotConsumerFloor.lagState || "unknown").trim() || "unknown",
+        runtimeSnapshotConsumerFloor.ackFloor ? `ack ${runtimeSnapshotConsumerFloor.ackFloor}` : "",
+        runtimeSnapshotConsumerFloor.witnessFloor ? `witness ${runtimeSnapshotConsumerFloor.witnessFloor}` : "",
+      ].filter(Boolean).join(" / "),
+    ]);
+  }
+  if (rows.length === 0) return "";
   return `
     <section class="nestedPanel runtimeProjectionPanel">
       <div class="summaryLabel">Runtime Projection</div>
-      ${renderKeyValueGridMarkup(records.map(([channelId, record]) => {
-        const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
-        const state = String(freshness.state || "fresh").trim() || "fresh";
-        const revision = String(record.revision || "").trim();
-        const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
-        return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
-      }))}
+      ${renderKeyValueGridMarkup(rows)}
     </section>
   `;
 }
