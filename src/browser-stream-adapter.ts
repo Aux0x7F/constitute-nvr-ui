@@ -1,6 +1,8 @@
 export {
   BROWSER_STREAM_ADAPTER_REF,
   DEFAULT_BROWSER_STREAM_ICE_SERVERS,
+  MEDIA_RENDER_BLOCKED_GRACE_MS,
+  MEDIA_RENDER_WAITING_GRACE_MS,
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
   browserStreamAvailable,
