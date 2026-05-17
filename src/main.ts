@@ -2,14 +2,18 @@ import "constitute-ui/styles.css";
 import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
-import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
-import {
-  materializationBudgetLimit,
-  requireSurfaceMaterializationBudget,
-  requireSurfaceModuleRole,
-} from "../../constitute-ui/src/surface-app-contract.js";
-import { renderShell } from "./shell";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
+import {
+  NVR_PREVIEW_SOURCE_LIMIT,
+  NVR_STREAM_EVENT_LIMIT,
+  nvrPlatformAdapterModule,
+  nvrProductViewModule,
+  nvrProjectionModelModule,
+  nvrRuntimeClientModule,
+  nvrServiceSurfaceAdapterModule,
+  nvrSurfaceBudgets,
+  nvrSurfaceModules,
+} from "./surface-modules";
 import {
   PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
   RUNTIME_AUTHORITY_POSTURE_GET,
@@ -26,7 +30,7 @@ import {
   runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
 } from "../../constitute-account/runtime-contract.js";
 import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
-import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-account/runtime-shell-state.js";
+import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-ui/src/runtime-shell-state.js";
 import {
   applyRuntimeActivationPostureToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
@@ -45,6 +49,27 @@ import {
 } from "../../constitute-ui/src/runtime-stream-session.js";
 import { preparedServiceRegistryServices } from "../../constitute-ui/src/service-registry-model.js";
 import {
+  MEDIA_RENDER_BLOCKED_GRACE_MS,
+  MEDIA_RENDER_WAITING_GRACE_MS,
+  type BrowserStreamAdapterState,
+  type BrowserStreamSession,
+  type RuntimeMediaTransportProfile,
+} from "./browser-stream-adapter";
+import {
+  NVR_AUTO_PREVIEW_SOURCE_ID,
+  type GrantedScope,
+  type RuntimeCameraAccessDisplay,
+  type RuntimeServiceDisplay,
+} from "./nvr-projection-model";
+import {
+  STREAM_SESSION_LIFECYCLE_PHASE,
+  SWARM,
+  streamSessionLifecycleRecordFromCarrier,
+  type MediaFulfillmentEvidence,
+  type MediaTransportObservation,
+} from "../../constitute-protocol/src/index.js";
+
+const {
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
   bindBrowserMediaStream,
@@ -54,8 +79,6 @@ import {
   closeBrowserStreamSession,
   createBrowserStreamOffer,
   isRuntimeMediaTransportProfileFailure,
-  MEDIA_RENDER_BLOCKED_GRACE_MS,
-  MEDIA_RENDER_WAITING_GRACE_MS,
   mediaFulfillmentEvidenceFromAdapterState,
   mediaFulfillmentEvidenceFromRender,
   mediaFulfillmentEvidenceFromTrack,
@@ -65,68 +88,18 @@ import {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
-  type BrowserStreamAdapterState,
-  type BrowserStreamSession,
-  type RuntimeMediaTransportProfile,
-} from "./browser-stream-adapter";
-import { createNvrAdminAdapter, normalizeNvrAdminAdapterError } from "./nvr-admin-adapter";
-import {
-  NVR_AUTO_PREVIEW_SOURCE_ID,
+} = nvrPlatformAdapterModule;
+
+const {
   cameraCountForContext,
   humanizeSourceId,
   normalizeRuntimeCameraEntries,
   normalizeSourceIds,
   nvrDisplayFromRecord,
-  type GrantedScope,
-  type RuntimeCameraAccessDisplay,
-  type RuntimeServiceDisplay,
-} from "./nvr-projection-model";
-import {
-  SURFACE_APP,
-  STREAM_SESSION_LIFECYCLE_PHASE,
-  SWARM,
-  streamSessionLifecycleRecordFromCarrier,
-  type MediaFulfillmentEvidence,
-  type MediaTransportObservation,
-} from "../../constitute-protocol/src/index.js";
+} = nvrProjectionModelModule;
 
-const nvrSurfaceModules = Object.freeze({
-  runtimeClient: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
-    moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
-    primitiveRef: "runtime.attach",
-  }),
-  platformAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
-    moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
-    primitiveRef: "media.transport.path",
-  }),
-  serviceSurfaceAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
-    moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
-    primitiveRef: "stream.intent",
-  }),
-});
-
-const nvrSurfaceBudgets = Object.freeze({
-  preview: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.preview", {
-    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.MEDIA,
-    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.TRANSPORT,
-    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.NATIVE,
-  }),
-  streamEvents: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.stream-events", {
-    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.EVIDENCE,
-    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.BUFFER,
-    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.REFERENCE_ONLY,
-  }),
-});
-
-const NVR_PREVIEW_SOURCE_LIMIT = Math.max(
-  1,
-  materializationBudgetLimit(
-    nvrSurfaceBudgets.preview,
-    "maxActivePreviews",
-    materializationBudgetLimit(nvrSurfaceBudgets.preview, "maxItems", 2),
-  ),
-);
-const NVR_STREAM_EVENT_LIMIT = Math.max(1, materializationBudgetLimit(nvrSurfaceBudgets.streamEvents, "maxItems", 240));
+const { createNvrAdminAdapter, normalizeNvrAdminAdapterError } = nvrServiceSurfaceAdapterModule;
+const { renderShell } = nvrProductViewModule;
 
 const nvrRuntimeAttachContext = Object.freeze({
   ...nvrSurfaceAttachContext,
@@ -571,7 +544,7 @@ const cameraTiles = new Map<string, CameraTile>();
 const runtimeCameraInfoBySourceId = new Map<string, RuntimeCameraAccessDisplay>();
 const notifications: NotificationEntry[] = [];
 
-let runtimeClient: ReturnType<typeof createRuntimeSurfaceClient> | null = null;
+let runtimeClient: ReturnType<typeof nvrRuntimeClientModule.createRuntimeSurfaceClient> | null = null;
 let runtimePort: MessagePort | null = null;
 let runtimeAttached = false;
 let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
@@ -1379,7 +1352,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
   if (runtimeClient?.attached && runtimeClient.port) return runtimeClient.port as MessagePort;
   if (typeof SharedWorker === "undefined") return null;
   if (!runtimeClient) {
-    runtimeClient = createRuntimeSurfaceClient({
+    runtimeClient = nvrRuntimeClientModule.createRuntimeSurfaceClient({
       clientId: randomOpaqueId("runtime-nvr"),
       surface: "constitute-nvr-ui",
       workerUrl: runtimeWorkerUrl(),

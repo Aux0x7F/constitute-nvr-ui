@@ -115,12 +115,20 @@ test("nvr ui activates runtime stream intents without owning browser transport s
 
 test("nvr ui attaches to the account-owned runtime worker contract", () => {
   const main = source("constitute-nvr-ui/src/main.ts");
+  const modules = source("constitute-nvr-ui/src/surface-modules.ts");
 
-  assert.match(main, /createRuntimeSurfaceClient/);
-  assert.match(main, /requireSurfaceModuleRole/);
-  assert.match(main, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.match(modules, /createRuntimeSurfaceClient/);
+  assert.match(modules, /createSurfaceModuleRegistry/);
+  assert.match(modules, /surfaceModuleRegistryPosture/);
+  assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/surface-module-registry\.js"/);
   assert.match(main, /from "\.\/surface-app-contract\.js"/);
+  assert.match(main, /from "\.\/surface-modules"/);
   assert.match(main, /nvrSurfaceModules/);
+  assert.match(modules, /nvrSurfaceModuleRegistry/);
+  assert.match(modules, /requireNvrSurfaceModuleClaim/);
+  assert.match(modules, /requireNvrSurfaceModuleBinding/);
+  assert.match(modules, /const implementation = posture\.implementation\?\.implementation/);
   assert.match(main, /activeRuntimeClientModuleRef/);
   assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
@@ -135,7 +143,11 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   assert.match(main, /accountRuntimeWorkerScriptUrl\(window\.location\.origin\)/);
   assert.match(main, /runtimeAttachDebugInfo\(window\.location\.origin\)/);
   assert.match(main, /const RUNTIME_ATTACH_TIMEOUT_MS = 12_000/);
-  assert.match(main, /let runtimeClient: ReturnType<typeof createRuntimeSurfaceClient> \| null = null/);
+  assert.match(main, /let runtimeClient: ReturnType<typeof nvrRuntimeClientModule\.createRuntimeSurfaceClient> \| null = null/);
+  assert.match(main, /nvrRuntimeClientModule\.createRuntimeSurfaceClient/);
+  assert.doesNotMatch(main, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.doesNotMatch(main, /createSurfaceModuleRegistry/);
+  assert.doesNotMatch(main, /surfaceModuleRegistryPosture/);
   assert.match(main, /runtimeClient\.waitUntilAttached\(RUNTIME_ATTACH_TIMEOUT_MS\)/);
   assert.match(main, /runtimeClient\.call\(type, payload, timeoutMs\)/);
   assert.doesNotMatch(main, /pendingRuntimeResponses/);
@@ -158,10 +170,12 @@ test("nvr ui declares a surface app contract", async () => {
 
 test("nvr service administration uses a service-surface adapter boundary", () => {
   const main = source("constitute-nvr-ui/src/main.ts");
+  const modules = source("constitute-nvr-ui/src/surface-modules.ts");
   const adminAdapter = source("constitute-nvr-ui/src/nvr-admin-adapter.ts");
 
-  assert.match(main, /from "\.\/nvr-admin-adapter"/);
-  assert.match(main, /createNvrAdminAdapter/);
+  assert.match(modules, /from "\.\/nvr-admin-adapter"/);
+  assert.match(modules, /createNvrAdminAdapter/);
+  assert.match(main, /nvrServiceSurfaceAdapterModule/);
   assert.match(main, /nvrAdminAdapter\.request\("list_camera_device_inventory"/);
   assert.match(main, /nvrAdminAdapter\.request\("apply_camera_device_config"/);
   assert.match(main, /nvrAdminAdapter\.request\("mount_camera_device"/);
@@ -169,6 +183,7 @@ test("nvr service administration uses a service-surface adapter boundary", () =>
   assert.doesNotMatch(main, /function requestNvrAdminAdapterAction/);
   assert.doesNotMatch(main, /function normalizeAdminError/);
   assert.doesNotMatch(main, /action === "apply_camera_device_config"\s+\?\s+CAMERA_APPLY_REQUEST_TIMEOUT_MS/);
+  assert.doesNotMatch(main, /from "\.\/nvr-admin-adapter"/);
   assert.match(adminAdapter, /export function createNvrAdminAdapter/);
   assert.match(adminAdapter, /export function normalizeNvrAdminAdapterError/);
   assert.match(adminAdapter, /export function nvrAdminActionTimeoutMs/);
@@ -181,9 +196,11 @@ test("nvr service administration uses a service-surface adapter boundary", () =>
 
 test("nvr projection model owns camera display normalization", () => {
   const main = source("constitute-nvr-ui/src/main.ts");
+  const modules = source("constitute-nvr-ui/src/surface-modules.ts");
   const projectionModel = source("constitute-nvr-ui/src/nvr-projection-model.ts");
 
-  assert.match(main, /from "\.\/nvr-projection-model"/);
+  assert.match(modules, /from "\.\/nvr-projection-model"/);
+  assert.match(main, /nvrProjectionModelModule/);
   assert.match(projectionModel, /export const NVR_AUTO_PREVIEW_SOURCE_ID/);
   assert.match(projectionModel, /export function normalizeSourceIds/);
   assert.match(projectionModel, /export function humanizeSourceId/);
