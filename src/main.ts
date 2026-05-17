@@ -30,7 +30,7 @@ import {
   runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
 } from "../../constitute-account/runtime-contract.js";
 import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
-import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-account/runtime-shell-state.js";
+import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-ui/src/runtime-shell-state.js";
 import {
   applyRuntimeActivationPostureToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
