@@ -3,8 +3,13 @@ import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
 import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
+import {
+  materializationBudgetLimit,
+  requireSurfaceMaterializationBudget,
+  requireSurfaceModuleRole,
+} from "../../constitute-ui/src/surface-app-contract.js";
 import { renderShell } from "./shell";
-import { nvrSurfaceAttachContext } from "./surface-app-contract.js";
+import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
   RUNTIME_AUTHORITY_POSTURE_GET,
@@ -42,6 +47,7 @@ import { preparedServiceRegistryServices } from "../../constitute-ui/src/service
 import {
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
+  bindBrowserMediaStream,
   browserStreamAvailable,
   candidateKey,
   collectBrowserMediaFulfillmentEvidence,
@@ -76,12 +82,57 @@ import {
   type RuntimeServiceDisplay,
 } from "./nvr-projection-model";
 import {
+  SURFACE_APP,
   STREAM_SESSION_LIFECYCLE_PHASE,
   SWARM,
   streamSessionLifecycleRecordFromCarrier,
   type MediaFulfillmentEvidence,
   type MediaTransportObservation,
 } from "../../constitute-protocol/src/index.js";
+
+const nvrSurfaceModules = Object.freeze({
+  runtimeClient: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
+    moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
+    primitiveRef: "runtime.attach",
+  }),
+  platformAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
+    moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
+    primitiveRef: "media.transport.path",
+  }),
+  serviceSurfaceAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
+    moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
+    primitiveRef: "stream.intent",
+  }),
+});
+
+const nvrSurfaceBudgets = Object.freeze({
+  preview: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.preview", {
+    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.MEDIA,
+    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.TRANSPORT,
+    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.NATIVE,
+  }),
+  streamEvents: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.stream-events", {
+    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.EVIDENCE,
+    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.BUFFER,
+    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.REFERENCE_ONLY,
+  }),
+});
+
+const NVR_PREVIEW_SOURCE_LIMIT = Math.max(
+  1,
+  materializationBudgetLimit(
+    nvrSurfaceBudgets.preview,
+    "maxActivePreviews",
+    materializationBudgetLimit(nvrSurfaceBudgets.preview, "maxItems", 2),
+  ),
+);
+const NVR_STREAM_EVENT_LIMIT = Math.max(1, materializationBudgetLimit(nvrSurfaceBudgets.streamEvents, "maxItems", 240));
+
+const nvrRuntimeAttachContext = Object.freeze({
+  ...nvrSurfaceAttachContext,
+  activeRuntimeClientModuleRef: nvrSurfaceModules.runtimeClient.moduleRef,
+  materializationBudgetRefs: Object.freeze(Object.values(nvrSurfaceBudgets).map((budget) => String(budget.budgetId || ""))),
+});
 
 type RuntimeZoneScope = {
   zoneId: string;
@@ -103,6 +154,10 @@ type RuntimeServiceContext = {
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
+};
+
+type SwarmEdgeAttachOptions = {
+  force?: boolean;
 };
 
 type RuntimePreparedStage =
@@ -520,6 +575,7 @@ let runtimeClient: ReturnType<typeof createRuntimeSurfaceClient> | null = null;
 let runtimePort: MessagePort | null = null;
 let runtimeAttached = false;
 let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
+let runtimeSnapshotConsumerFloor: Record<string, unknown> | null = null;
 let runtimeServiceContext: RuntimeServiceContext | null = null;
 let directEntryRepairTimer = 0;
 let directEntryRepairInFlight: Promise<void> | null = null;
@@ -569,12 +625,12 @@ let streamLiveWatchdogTimer = 0;
 let reconnectInFlight: Promise<void> | null = null;
 let reconnectScheduleInFlight = false;
 let routeBaselineNoticeAt = 0;
-let runtimeEdgeAttachRepairTarget = "";
-let runtimeEdgeAttachRepairAttemptedAt = 0;
-let runtimeEdgeAttachRepairBackoffUntil = 0;
-let runtimeEdgeAttachRepairFailureCount = 0;
-let runtimeEdgeAttachRepairInFlight: Promise<boolean> | null = null;
-let runtimeEdgeAttachRepairInFlightTarget = "";
+let swarmEdgeAttachRepairTarget = "";
+let swarmEdgeAttachRepairAttemptedAt = 0;
+let swarmEdgeAttachRepairBackoffUntil = 0;
+let swarmEdgeAttachRepairFailureCount = 0;
+let swarmEdgeAttachRepairInFlight: Promise<boolean> | null = null;
+let swarmEdgeAttachRepairInFlightTarget = "";
 let reconnectAttemptCount = 0;
 let accountBridgeFrame: HTMLIFrameElement | null = null;
 let accountBridgePromise: Promise<void> | null = null;
@@ -1333,7 +1389,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       debug: diagnosticsEnabled,
       debugInfo: runtimeAttachDebugInfo(window.location.origin),
       logPrefix: "nvr-ui",
-      attachContext: nvrSurfaceAttachContext,
+      attachContext: nvrRuntimeAttachContext,
       onPort: (port) => {
         runtimePort = port as MessagePort;
         runtimeAttached = false;
@@ -1353,6 +1409,9 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
         runtimeAttached = Boolean(runtimePort);
         absorbRuntimeSnapshot(snapshot);
         refreshRuntimeProjectionLabels();
+      },
+      onConsumerFloor: (floor) => {
+        runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
       },
       onAttachTimeout: () => {
         runtimeAttached = false;
@@ -1919,7 +1978,10 @@ function baseRuntimeAuthorityPayload(): Record<string, unknown> {
   return runtimeAuthorityPayloadFromContext(runtimeServiceContext || {});
 }
 
-async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext): Promise<boolean> {
+async function ensureRuntimeSwarmEdgeForContext(
+  context: RuntimeServiceContext,
+  options: SwarmEdgeAttachOptions = {},
+): Promise<boolean> {
   const edgeEndpoint = localGatewayEdgeEndpoint(context.gatewayPk);
   const rawZoneScope = context.zoneScope || localGatewayExtraZoneScope(context.gatewayPk);
   if (!edgeEndpoint || !rawZoneScope?.zoneId) return false;
@@ -1937,23 +1999,24 @@ async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext):
     String(zoneScope.ttl || ""),
     String(zoneScope.maxHops || ""),
   ].join("|");
-  if (runtimeEdgeAttachRepairInFlight && runtimeEdgeAttachRepairInFlightTarget === target) {
-    return await runtimeEdgeAttachRepairInFlight;
+  if (swarmEdgeAttachRepairInFlight && swarmEdgeAttachRepairInFlightTarget === target) {
+    return await swarmEdgeAttachRepairInFlight;
   }
-  runtimeEdgeAttachRepairInFlightTarget = target;
-  runtimeEdgeAttachRepairInFlight = (async () => {
+  swarmEdgeAttachRepairInFlightTarget = target;
+  swarmEdgeAttachRepairInFlight = (async () => {
     const now = Date.now();
-    if (runtimeEdgeAttachRepairTarget !== target) {
-      runtimeEdgeAttachRepairTarget = target;
-      runtimeEdgeAttachRepairFailureCount = 0;
-      runtimeEdgeAttachRepairBackoffUntil = 0;
-    } else if (
-      runtimeEdgeAttachRepairBackoffUntil > now
-      || now - runtimeEdgeAttachRepairAttemptedAt < RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS
-    ) {
-      return false;
+    const edgeDisconnected = Boolean(runtimeSnapshot?.edge && runtimeSnapshot.edge.connected !== true);
+    if (swarmEdgeAttachRepairTarget !== target) {
+      swarmEdgeAttachRepairTarget = target;
+      swarmEdgeAttachRepairFailureCount = 0;
+      swarmEdgeAttachRepairBackoffUntil = 0;
+    } else {
+      if (swarmEdgeAttachRepairBackoffUntil > now) return false;
+      if (!options.force && !edgeDisconnected && now - swarmEdgeAttachRepairAttemptedAt < RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS) {
+        return false;
+      }
     }
-    runtimeEdgeAttachRepairAttemptedAt = now;
+    swarmEdgeAttachRepairAttemptedAt = now;
     try {
       await runtimeCall("swarm.edge.attach", {
         payload: {
@@ -1961,25 +2024,25 @@ async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext):
           zoneScope,
         },
       }, RUNTIME_WRITE_TIMEOUT_MS);
-      runtimeEdgeAttachRepairFailureCount = 0;
-      runtimeEdgeAttachRepairBackoffUntil = 0;
+      swarmEdgeAttachRepairFailureCount = 0;
+      swarmEdgeAttachRepairBackoffUntil = 0;
       appendLog(`runtime swarm edge attach requested for ${edgeEndpoint}`);
       return true;
     } catch (error) {
-      runtimeEdgeAttachRepairFailureCount += 1;
-      runtimeEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
+      swarmEdgeAttachRepairFailureCount += 1;
+      swarmEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
         RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS,
-        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS * runtimeEdgeAttachRepairFailureCount,
+        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS * swarmEdgeAttachRepairFailureCount,
       );
       throw error;
     }
   })();
   try {
-    return await runtimeEdgeAttachRepairInFlight;
+    return await swarmEdgeAttachRepairInFlight;
   } finally {
-    if (runtimeEdgeAttachRepairInFlightTarget === target) {
-      runtimeEdgeAttachRepairInFlight = null;
-      runtimeEdgeAttachRepairInFlightTarget = "";
+    if (swarmEdgeAttachRepairInFlightTarget === target) {
+      swarmEdgeAttachRepairInFlight = null;
+      swarmEdgeAttachRepairInFlightTarget = "";
     }
   }
 }
@@ -2117,9 +2180,7 @@ function startRuntimeStreamStatsMonitor(session: RuntimeStreamSession, video?: H
 
 function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaStreamTrack, session: RuntimeStreamSession): void {
   const tile = ensureCameraTile(sourceId);
-  tile.video.srcObject = stream as MediaStream;
-  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
-  startRuntimeStreamStatsMonitor(session, tile.video);
+  const mediaStream = stream as MediaStream;
   const markRenderLive = (evidence = reportRenderReadiness(session, tile.video)) => {
     if (evidence.state !== SWARM.MEDIA_FULFILLMENT_STATE.USABLE) {
       const readiness = mediaEvidenceReadinessState(evidence) || "waitingRender";
@@ -2148,10 +2209,24 @@ function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaS
   tile.video.addEventListener("loadedmetadata", markPendingRender, { once: true });
   tile.video.addEventListener("resize", markPendingRender);
   tile.video.addEventListener("playing", markRenderLive, { once: true });
-  if (track.readyState === "live") {
-    markPendingRender();
-    window.setTimeout(markRenderLive, 1_000);
-  }
+  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
+  startRuntimeStreamStatsMonitor(session, tile.video);
+  void bindBrowserMediaStream(tile.video, mediaStream).then((result) => {
+    if (!result.ok) {
+      const detail = result.reason || "browser media playback request failed";
+      appendLog(`stream render bind failed: ${detail}`);
+      setTileState(sourceId, "connecting", "Waiting for browser media playback.");
+      setDrawerStatus(`Live media track attached; browser playback is pending (${detail}).`);
+      scheduleStreamLiveWatchdog("stream render bind failed");
+    }
+    if (track.readyState === "live") {
+      markPendingRender();
+      window.setTimeout(markRenderLive, 1_000);
+    }
+  }).catch((error) => {
+    appendLog(`stream render bind failed: ${String((error as Error)?.message || error)}`);
+    scheduleStreamLiveWatchdog("stream render bind failed");
+  });
 }
 
 function handleRuntimeStreamAdapterState(session: RuntimeStreamSession, state: BrowserStreamAdapterState): void {
@@ -2219,6 +2294,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       sourceId,
       sessionId: expectedSessionId,
       nonce,
+      moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
       iceServers: mediaIceServers,
       onCandidate: (candidate) => {
         if (!streamOpenQueued) return;
@@ -2264,6 +2340,8 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       },
       candidates: offerCandidates,
       mediaTransportProfile: runtimeMediaTransportContract(mediaTransportProfile),
+      materializationBudgetRef: String(nvrSurfaceBudgets.preview.budgetId || "nvr-ui.preview"),
+      evidenceBudgetRef: String(nvrSurfaceBudgets.streamEvents.budgetId || "nvr-ui.stream-events"),
       iceServers: {
         stun: runtimeMediaIceServerUrls(mediaTransportProfile, "stun:"),
         turn: runtimeMediaIceServerUrls(mediaTransportProfile, "turn:"),
@@ -2448,6 +2526,7 @@ function adminProjectionFallback(action: string, payload: Record<string, unknown
 }
 
 const nvrAdminAdapter = createNvrAdminAdapter({
+  moduleRef: nvrSurfaceModules.serviceSurfaceAdapter.moduleRef,
   defaultTimeoutMs: ADMIN_INTENT_TIMEOUT_MS,
   applyCameraDeviceConfigTimeoutMs: CAMERA_APPLY_REQUEST_TIMEOUT_MS,
   publishRuntimeServiceIntent,
@@ -3899,17 +3978,28 @@ function renderTileStreamStatus(sourceId: string): void {
 
 function renderProjectionSyncSummary(): string {
   const records = Object.entries(nvrProjectionState.projectionRecords);
-  if (records.length === 0) return "";
+  const rows = records.map(([channelId, record]) => {
+    const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
+    const state = String(freshness.state || "fresh").trim() || "fresh";
+    const revision = String(record.revision || "").trim();
+    const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
+    return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
+  });
+  if (runtimeSnapshotConsumerFloor) {
+    rows.push([
+      "runtime.floor",
+      [
+        String(runtimeSnapshotConsumerFloor.lagState || "unknown").trim() || "unknown",
+        runtimeSnapshotConsumerFloor.ackFloor ? `ack ${runtimeSnapshotConsumerFloor.ackFloor}` : "",
+        runtimeSnapshotConsumerFloor.witnessFloor ? `witness ${runtimeSnapshotConsumerFloor.witnessFloor}` : "",
+      ].filter(Boolean).join(" / "),
+    ]);
+  }
+  if (rows.length === 0) return "";
   return `
     <section class="nestedPanel runtimeProjectionPanel">
       <div class="summaryLabel">Runtime Projection</div>
-      ${renderKeyValueGridMarkup(records.map(([channelId, record]) => {
-        const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
-        const state = String(freshness.state || "fresh").trim() || "fresh";
-        const revision = String(record.revision || "").trim();
-        const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
-        return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
-      }))}
+      ${renderKeyValueGridMarkup(rows)}
     </section>
   `;
 }
@@ -3929,6 +4019,23 @@ function renderStoragePinIntentSummary(): string {
           `${status} / ${objectCount} object ref${objectCount === 1 ? "" : "s"} / ${Number(intent.desiredReplicas || 0) || 1} replica${Number(intent.desiredReplicas || 0) === 1 ? "" : "s"}`,
         ];
       }))}
+    </section>
+  `;
+}
+
+function renderRuntimePostureSummary(): string {
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasLiveTiles() });
+  const resource = shellState.resource || {};
+  const retention = shellState.retention || {};
+  return `
+    <section class="nestedPanel runtimePosturePanel">
+      <div class="summaryLabel">Runtime Posture</div>
+      ${renderKeyValueGridMarkup([
+        ["Resource", String(resource.state || "unknown")],
+        ["Cleanup", resource.cleanupAllowed ? "allowed" : String(resource.cleanupReason || "blocked")],
+        ["Retention", String(retention.state || "unknown")],
+        ["Release", retention.releaseRequired ? String(retention.reason || "blocked") : "ready"],
+      ])}
     </section>
   `;
 }
@@ -4005,6 +4112,7 @@ function renderNvrSettingsSummary(): void {
   const accessSummary = nvrAccessSummary();
   const projectionSummary = renderProjectionSyncSummary();
   const storageSummary = renderStoragePinIntentSummary();
+  const runtimePostureSummary = renderRuntimePostureSummary();
   nvrSettingsSummaryEl.innerHTML = `
     <section class="nestedPanel">
       <div class="summaryLabel">Service</div>
@@ -4028,6 +4136,7 @@ function renderNvrSettingsSummary(): void {
     </section>
     ${projectionSummary}
     ${storageSummary}
+    ${runtimePostureSummary}
     ${
       viewerIsOwner()
         ? `<section class="nestedPanel">
@@ -4623,7 +4732,7 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
 function runtimePreviewSourceIds(context: RuntimeServiceContext): string[] {
   const display = context.display || {};
   const sources = normalizeSourceIds(display.sources);
-  if (sources.length > 0) return sources;
+  if (sources.length > 0) return sources.slice(0, NVR_PREVIEW_SOURCE_LIMIT);
   return cameraCountForContext(context) > 0 ? [NVR_AUTO_PREVIEW_SOURCE_ID] : [];
 }
 
@@ -4709,7 +4818,7 @@ function resetRuntimeStreamRecovery(reason: string): void {
 }
 
 function activeRuntimeStreamSessions(): RuntimeStreamSession[] {
-  return Array.from(new Set(runtimeStreamSessionsBySessionId.values()));
+  return Array.from(new Set(runtimeStreamSessionsBySessionId.values())).slice(-NVR_STREAM_EVENT_LIMIT);
 }
 
 function runtimeStreamSessionPosture(): {
@@ -4843,7 +4952,7 @@ function scheduleAutomaticReconnect(reason: string): void {
         reconnectInFlight = (async () => {
           let retryReason = "";
           try {
-            await reconnect();
+            await reconnect({ force: true });
           } catch (error) {
             const detail = String((error as Error)?.message || error || "automatic reconnect failed");
             appendLog(`automatic reconnect failed: ${detail}`);
@@ -4894,13 +5003,13 @@ function scheduleRuntimeAuthorityReconnect(reason: string): void {
   }, delayMs);
 }
 
-async function reconnect(): Promise<void> {
+async function reconnect(options: SwarmEdgeAttachOptions = {}): Promise<void> {
   cancelScheduledReconnect();
   if (!runtimeServiceContext) {
     runtimeServiceContext = await loadRuntimeServiceContext();
   }
   refreshSummary(runtimeServiceContext);
-  await ensureRuntimeSwarmEdgeForContext(runtimeServiceContext).catch((error) => {
+  await ensureRuntimeSwarmEdgeForContext(runtimeServiceContext, options).catch((error) => {
     appendLog(`runtime swarm edge attach unavailable: ${String((error as Error)?.message || error)}`);
   });
   await connectLiveGrid(runtimeServiceContext);

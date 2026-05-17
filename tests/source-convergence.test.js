@@ -62,6 +62,10 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /mediaFulfillmentEvidenceFromAdapterState/);
   assert.match(adapter, /mediaFulfillmentEvidenceFromRender/);
   assert.match(adapter, /collectBrowserMediaFulfillmentEvidence/);
+  assert.match(adapter, /bindBrowserMediaStream/);
+  assert.match(nvrAdapter, /bindBrowserMediaStream/);
+  assert.match(main, /bindBrowserMediaStream\(tile\.video, mediaStream\)/);
+  assert.match(main, /reconnect\(\{ force: true \}\)/);
   assert.match(adapter, /inboundRtpStalled/);
   assert.match(adapter, /export type RuntimeMediaTransportProfile/);
   assert.match(adapter, /export function runtimeMediaIceServers/);
@@ -69,6 +73,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /export function runtimeMediaTransportContract/);
   assert.match(adapter, /export function runtimeMediaTransportBlockedDetail/);
   assert.match(adapter, /export function isRuntimeMediaTransportProfileFailure/);
+  assert.match(main, /moduleRef: nvrSurfaceModules\.platformAdapter\.moduleRef/);
   assert.doesNotMatch(main, /function runtimeMediaIceServers/);
   assert.doesNotMatch(main, /function runtimeMediaIceServerUrls/);
   assert.doesNotMatch(main, /function runtimeMediaTransportContract/);
@@ -80,6 +85,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /runtimeStreamRecoveryPosture/);
   assert.match(main, /resetRuntimeStreamRecovery/);
   assert.match(main, /runtimeStreamRecoveryParentIntentId/);
+  assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
   assert.match(streamSession, /memberWritten/);
   assert.match(streamSession, /memberRead/);
@@ -111,9 +117,12 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   const main = source("constitute-nvr-ui/src/main.ts");
 
   assert.match(main, /createRuntimeSurfaceClient/);
+  assert.match(main, /requireSurfaceModuleRole/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
   assert.match(main, /from "\.\/surface-app-contract\.js"/);
-  assert.match(main, /attachContext: nvrSurfaceAttachContext/);
+  assert.match(main, /nvrSurfaceModules/);
+  assert.match(main, /activeRuntimeClientModuleRef/);
+  assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
   assert.match(main, /PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID/);
   assert.match(main, /RUNTIME_STREAM_OPEN/);
@@ -163,6 +172,8 @@ test("nvr service administration uses a service-surface adapter boundary", () =>
   assert.match(adminAdapter, /export function createNvrAdminAdapter/);
   assert.match(adminAdapter, /export function normalizeNvrAdminAdapterError/);
   assert.match(adminAdapter, /export function nvrAdminActionTimeoutMs/);
+  assert.match(adminAdapter, /moduleRef: String\(options\.moduleRef \|\| ""\)/);
+  assert.match(main, /moduleRef: nvrSurfaceModules\.serviceSurfaceAdapter\.moduleRef/);
   assert.match(adminAdapter, /action === "apply_camera_device_config"/);
   assert.match(adminAdapter, /Gateway update required before camera administration is available/);
   assert.match(adminAdapter, /Owner runtime access is required before camera administration is available/);
@@ -239,6 +250,7 @@ test("nvr ui uses shared summary row component instead of a local kv dialect", (
 test("first-party account centers use shared shell state and account-only actions", () => {
   const account = source("constitute-account/app.js");
   const gateway = source("constitute-gateway-ui/src/main.js");
+  const gatewayRuntimeModel = source("constitute-gateway-ui/src/runtime-model.js");
   const logging = source("constitute-logging-ui/src/main.js");
   const nvr = source("constitute-nvr-ui/src/main.ts");
   const all = [account, gateway, logging, nvr].join("\n");
@@ -247,6 +259,10 @@ test("first-party account centers use shared shell state and account-only action
   assert.match(gateway, /deriveRuntimeShellState/);
   assert.match(logging, /deriveRuntimeShellState/);
   assert.match(nvr, /deriveRuntimeShellState/);
+  assert.match(account, /runtimeResourceStatus/);
+  assert.match(gatewayRuntimeModel, /Resource posture/);
+  assert.match(logging, /shellState\.resource\?\.state/);
+  assert.match(nvr, /Runtime Posture/);
   assert.doesNotMatch(all, /Copy Identity ID/);
   assert.doesNotMatch(all, /account\.copy_identity/);
 

@@ -5,6 +5,7 @@ export {
   MEDIA_RENDER_WAITING_GRACE_MS,
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
+  bindBrowserMediaStream,
   browserStreamAvailable,
   candidateJson,
   candidateKey,
@@ -26,6 +27,7 @@ export {
 export type {
   BrowserStreamAdapterOptions,
   BrowserStreamAdapterState,
+  BrowserMediaStreamBindResult,
   BrowserStreamOffer,
   BrowserStreamSession,
   RuntimeMediaTransportProfile,
