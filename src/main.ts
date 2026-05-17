@@ -47,6 +47,7 @@ import { preparedServiceRegistryServices } from "../../constitute-ui/src/service
 import {
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
+  bindBrowserMediaStream,
   browserStreamAvailable,
   candidateKey,
   collectBrowserMediaFulfillmentEvidence,
@@ -153,6 +154,10 @@ type RuntimeServiceContext = {
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
+};
+
+type SwarmEdgeAttachOptions = {
+  force?: boolean;
 };
 
 type RuntimePreparedStage =
@@ -620,12 +625,12 @@ let streamLiveWatchdogTimer = 0;
 let reconnectInFlight: Promise<void> | null = null;
 let reconnectScheduleInFlight = false;
 let routeBaselineNoticeAt = 0;
-let runtimeEdgeAttachRepairTarget = "";
-let runtimeEdgeAttachRepairAttemptedAt = 0;
-let runtimeEdgeAttachRepairBackoffUntil = 0;
-let runtimeEdgeAttachRepairFailureCount = 0;
-let runtimeEdgeAttachRepairInFlight: Promise<boolean> | null = null;
-let runtimeEdgeAttachRepairInFlightTarget = "";
+let swarmEdgeAttachRepairTarget = "";
+let swarmEdgeAttachRepairAttemptedAt = 0;
+let swarmEdgeAttachRepairBackoffUntil = 0;
+let swarmEdgeAttachRepairFailureCount = 0;
+let swarmEdgeAttachRepairInFlight: Promise<boolean> | null = null;
+let swarmEdgeAttachRepairInFlightTarget = "";
 let reconnectAttemptCount = 0;
 let accountBridgeFrame: HTMLIFrameElement | null = null;
 let accountBridgePromise: Promise<void> | null = null;
@@ -1973,7 +1978,10 @@ function baseRuntimeAuthorityPayload(): Record<string, unknown> {
   return runtimeAuthorityPayloadFromContext(runtimeServiceContext || {});
 }
 
-async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext): Promise<boolean> {
+async function ensureRuntimeSwarmEdgeForContext(
+  context: RuntimeServiceContext,
+  options: SwarmEdgeAttachOptions = {},
+): Promise<boolean> {
   const edgeEndpoint = localGatewayEdgeEndpoint(context.gatewayPk);
   const rawZoneScope = context.zoneScope || localGatewayExtraZoneScope(context.gatewayPk);
   if (!edgeEndpoint || !rawZoneScope?.zoneId) return false;
@@ -1991,23 +1999,24 @@ async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext):
     String(zoneScope.ttl || ""),
     String(zoneScope.maxHops || ""),
   ].join("|");
-  if (runtimeEdgeAttachRepairInFlight && runtimeEdgeAttachRepairInFlightTarget === target) {
-    return await runtimeEdgeAttachRepairInFlight;
+  if (swarmEdgeAttachRepairInFlight && swarmEdgeAttachRepairInFlightTarget === target) {
+    return await swarmEdgeAttachRepairInFlight;
   }
-  runtimeEdgeAttachRepairInFlightTarget = target;
-  runtimeEdgeAttachRepairInFlight = (async () => {
+  swarmEdgeAttachRepairInFlightTarget = target;
+  swarmEdgeAttachRepairInFlight = (async () => {
     const now = Date.now();
-    if (runtimeEdgeAttachRepairTarget !== target) {
-      runtimeEdgeAttachRepairTarget = target;
-      runtimeEdgeAttachRepairFailureCount = 0;
-      runtimeEdgeAttachRepairBackoffUntil = 0;
-    } else if (
-      runtimeEdgeAttachRepairBackoffUntil > now
-      || now - runtimeEdgeAttachRepairAttemptedAt < RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS
-    ) {
-      return false;
+    const edgeDisconnected = Boolean(runtimeSnapshot?.edge && runtimeSnapshot.edge.connected !== true);
+    if (swarmEdgeAttachRepairTarget !== target) {
+      swarmEdgeAttachRepairTarget = target;
+      swarmEdgeAttachRepairFailureCount = 0;
+      swarmEdgeAttachRepairBackoffUntil = 0;
+    } else {
+      if (swarmEdgeAttachRepairBackoffUntil > now) return false;
+      if (!options.force && !edgeDisconnected && now - swarmEdgeAttachRepairAttemptedAt < RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS) {
+        return false;
+      }
     }
-    runtimeEdgeAttachRepairAttemptedAt = now;
+    swarmEdgeAttachRepairAttemptedAt = now;
     try {
       await runtimeCall("swarm.edge.attach", {
         payload: {
@@ -2015,25 +2024,25 @@ async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext):
           zoneScope,
         },
       }, RUNTIME_WRITE_TIMEOUT_MS);
-      runtimeEdgeAttachRepairFailureCount = 0;
-      runtimeEdgeAttachRepairBackoffUntil = 0;
+      swarmEdgeAttachRepairFailureCount = 0;
+      swarmEdgeAttachRepairBackoffUntil = 0;
       appendLog(`runtime swarm edge attach requested for ${edgeEndpoint}`);
       return true;
     } catch (error) {
-      runtimeEdgeAttachRepairFailureCount += 1;
-      runtimeEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
+      swarmEdgeAttachRepairFailureCount += 1;
+      swarmEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
         RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS,
-        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS * runtimeEdgeAttachRepairFailureCount,
+        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS * swarmEdgeAttachRepairFailureCount,
       );
       throw error;
     }
   })();
   try {
-    return await runtimeEdgeAttachRepairInFlight;
+    return await swarmEdgeAttachRepairInFlight;
   } finally {
-    if (runtimeEdgeAttachRepairInFlightTarget === target) {
-      runtimeEdgeAttachRepairInFlight = null;
-      runtimeEdgeAttachRepairInFlightTarget = "";
+    if (swarmEdgeAttachRepairInFlightTarget === target) {
+      swarmEdgeAttachRepairInFlight = null;
+      swarmEdgeAttachRepairInFlightTarget = "";
     }
   }
 }
@@ -2171,9 +2180,7 @@ function startRuntimeStreamStatsMonitor(session: RuntimeStreamSession, video?: H
 
 function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaStreamTrack, session: RuntimeStreamSession): void {
   const tile = ensureCameraTile(sourceId);
-  tile.video.srcObject = stream as MediaStream;
-  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
-  startRuntimeStreamStatsMonitor(session, tile.video);
+  const mediaStream = stream as MediaStream;
   const markRenderLive = (evidence = reportRenderReadiness(session, tile.video)) => {
     if (evidence.state !== SWARM.MEDIA_FULFILLMENT_STATE.USABLE) {
       const readiness = mediaEvidenceReadinessState(evidence) || "waitingRender";
@@ -2202,10 +2209,24 @@ function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaS
   tile.video.addEventListener("loadedmetadata", markPendingRender, { once: true });
   tile.video.addEventListener("resize", markPendingRender);
   tile.video.addEventListener("playing", markRenderLive, { once: true });
-  if (track.readyState === "live") {
-    markPendingRender();
-    window.setTimeout(markRenderLive, 1_000);
-  }
+  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
+  startRuntimeStreamStatsMonitor(session, tile.video);
+  void bindBrowserMediaStream(tile.video, mediaStream).then((result) => {
+    if (!result.ok) {
+      const detail = result.reason || "browser media playback request failed";
+      appendLog(`stream render bind failed: ${detail}`);
+      setTileState(sourceId, "connecting", "Waiting for browser media playback.");
+      setDrawerStatus(`Live media track attached; browser playback is pending (${detail}).`);
+      scheduleStreamLiveWatchdog("stream render bind failed");
+    }
+    if (track.readyState === "live") {
+      markPendingRender();
+      window.setTimeout(markRenderLive, 1_000);
+    }
+  }).catch((error) => {
+    appendLog(`stream render bind failed: ${String((error as Error)?.message || error)}`);
+    scheduleStreamLiveWatchdog("stream render bind failed");
+  });
 }
 
 function handleRuntimeStreamAdapterState(session: RuntimeStreamSession, state: BrowserStreamAdapterState): void {
@@ -4931,7 +4952,7 @@ function scheduleAutomaticReconnect(reason: string): void {
         reconnectInFlight = (async () => {
           let retryReason = "";
           try {
-            await reconnect();
+            await reconnect({ force: true });
           } catch (error) {
             const detail = String((error as Error)?.message || error || "automatic reconnect failed");
             appendLog(`automatic reconnect failed: ${detail}`);
@@ -4982,13 +5003,13 @@ function scheduleRuntimeAuthorityReconnect(reason: string): void {
   }, delayMs);
 }
 
-async function reconnect(): Promise<void> {
+async function reconnect(options: SwarmEdgeAttachOptions = {}): Promise<void> {
   cancelScheduledReconnect();
   if (!runtimeServiceContext) {
     runtimeServiceContext = await loadRuntimeServiceContext();
   }
   refreshSummary(runtimeServiceContext);
-  await ensureRuntimeSwarmEdgeForContext(runtimeServiceContext).catch((error) => {
+  await ensureRuntimeSwarmEdgeForContext(runtimeServiceContext, options).catch((error) => {
     appendLog(`runtime swarm edge attach unavailable: ${String((error as Error)?.message || error)}`);
   });
   await connectLiveGrid(runtimeServiceContext);

@@ -62,6 +62,10 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /mediaFulfillmentEvidenceFromAdapterState/);
   assert.match(adapter, /mediaFulfillmentEvidenceFromRender/);
   assert.match(adapter, /collectBrowserMediaFulfillmentEvidence/);
+  assert.match(adapter, /bindBrowserMediaStream/);
+  assert.match(nvrAdapter, /bindBrowserMediaStream/);
+  assert.match(main, /bindBrowserMediaStream\(tile\.video, mediaStream\)/);
+  assert.match(main, /reconnect\(\{ force: true \}\)/);
   assert.match(adapter, /inboundRtpStalled/);
   assert.match(adapter, /export type RuntimeMediaTransportProfile/);
   assert.match(adapter, /export function runtimeMediaIceServers/);
@@ -81,6 +85,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /runtimeStreamRecoveryPosture/);
   assert.match(main, /resetRuntimeStreamRecovery/);
   assert.match(main, /runtimeStreamRecoveryParentIntentId/);
+  assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
   assert.match(streamSession, /memberWritten/);
   assert.match(streamSession, /memberRead/);
