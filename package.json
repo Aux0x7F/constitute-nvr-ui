@@ -14,8 +14,8 @@
     "@noble/ciphers": "^1.2.1",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
-    "constitute-protocol": "github:Aux0x7F/constitute-protocol#codex/swarm-runtime-convergence-protocol",
-    "constitute-ui": "github:Aux0x7F/constitute-ui#codex/surface-sdk-boundary-20260517"
+    "constitute-protocol": "github:Aux0x7F/constitute-protocol#main",
+    "constitute-ui": "github:Aux0x7F/constitute-ui#main"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
@@ -23,5 +23,3 @@
     "vite": "^6.2.0"
   }
 }
-
-
