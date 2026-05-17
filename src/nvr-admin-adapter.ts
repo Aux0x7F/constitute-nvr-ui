@@ -2,6 +2,7 @@ export type NvrAdminAdapterPayload = Record<string, unknown>;
 export type NvrAdminAdapterResult = Record<string, unknown>;
 
 export type NvrAdminAdapterOptions = {
+  moduleRef?: string;
   defaultTimeoutMs: number;
   applyCameraDeviceConfigTimeoutMs: number;
   publishRuntimeServiceIntent: (
@@ -16,6 +17,7 @@ export type NvrAdminAdapterOptions = {
 };
 
 export type NvrAdminAdapter = {
+  moduleRef: string;
   timeoutMs(action: string): number;
   request(action: string, payload?: NvrAdminAdapterPayload): Promise<NvrAdminAdapterResult>;
 };
@@ -43,6 +45,7 @@ export function nvrAdminActionTimeoutMs(
 
 export function createNvrAdminAdapter(options: NvrAdminAdapterOptions): NvrAdminAdapter {
   return {
+    moduleRef: String(options.moduleRef || ""),
     timeoutMs(action: string): number {
       return nvrAdminActionTimeoutMs(action, options);
     },

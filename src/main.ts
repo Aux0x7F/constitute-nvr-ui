@@ -3,8 +3,9 @@ import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
 import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
+import { requireSurfaceModuleRole } from "../../constitute-ui/src/surface-app-contract.js";
 import { renderShell } from "./shell";
-import { nvrSurfaceAttachContext } from "./surface-app-contract.js";
+import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
   RUNTIME_AUTHORITY_POSTURE_GET,
@@ -76,12 +77,33 @@ import {
   type RuntimeServiceDisplay,
 } from "./nvr-projection-model";
 import {
+  SURFACE_APP,
   STREAM_SESSION_LIFECYCLE_PHASE,
   SWARM,
   streamSessionLifecycleRecordFromCarrier,
   type MediaFulfillmentEvidence,
   type MediaTransportObservation,
 } from "../../constitute-protocol/src/index.js";
+
+const nvrSurfaceModules = Object.freeze({
+  runtimeClient: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
+    moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
+    primitiveRef: "runtime.attach",
+  }),
+  platformAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
+    moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
+    primitiveRef: "media.transport.path",
+  }),
+  serviceSurfaceAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
+    moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
+    primitiveRef: "stream.intent",
+  }),
+});
+
+const nvrRuntimeAttachContext = Object.freeze({
+  ...nvrSurfaceAttachContext,
+  activeRuntimeClientModuleRef: nvrSurfaceModules.runtimeClient.moduleRef,
+});
 
 type RuntimeZoneScope = {
   zoneId: string;
@@ -1333,7 +1355,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       debug: diagnosticsEnabled,
       debugInfo: runtimeAttachDebugInfo(window.location.origin),
       logPrefix: "nvr-ui",
-      attachContext: nvrSurfaceAttachContext,
+      attachContext: nvrRuntimeAttachContext,
       onPort: (port) => {
         runtimePort = port as MessagePort;
         runtimeAttached = false;
@@ -2219,6 +2241,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       sourceId,
       sessionId: expectedSessionId,
       nonce,
+      moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
       iceServers: mediaIceServers,
       onCandidate: (candidate) => {
         if (!streamOpenQueued) return;
@@ -2448,6 +2471,7 @@ function adminProjectionFallback(action: string, payload: Record<string, unknown
 }
 
 const nvrAdminAdapter = createNvrAdminAdapter({
+  moduleRef: nvrSurfaceModules.serviceSurfaceAdapter.moduleRef,
   defaultTimeoutMs: ADMIN_INTENT_TIMEOUT_MS,
   applyCameraDeviceConfigTimeoutMs: CAMERA_APPLY_REQUEST_TIMEOUT_MS,
   publishRuntimeServiceIntent,
