@@ -1,43 +1,92 @@
 import "constitute-ui/styles.css";
 import "./styles.css";
-import { renderActionList, renderAccountCenterSummary, setConnectionStateText } from "constitute-ui";
-import { BROKER } from "constitute-protocol";
+import { renderActionList, setConnectionStateText } from "constitute-ui";
+import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
+import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
 import { renderShell } from "./shell";
+import {
+  PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
+  RUNTIME_AUTHORITY_POSTURE_GET,
+  RUNTIME_MEDIA_FULFILLMENT_EVIDENCE_PUT,
+  RUNTIME_MEDIA_TRANSPORT_OBSERVATION_PUT,
+  RUNTIME_MEDIA_TRANSPORT_PROFILE_GET,
+  RUNTIME_STREAM_CLOSE,
+  RUNTIME_STREAM_CONTROL,
+  RUNTIME_STREAM_OPEN,
+  RUNTIME_STREAM_RECOVERY_REQUEST,
+  runtimeAttachDebugInfo,
+  runtimeAuthorityPayloadFromContext,
+  runtimeSharedWorkerName,
+  runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
+} from "../../constitute-account/runtime-contract.js";
+import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
+import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-account/runtime-shell-state.js";
+import {
+  applyRuntimeActivationPostureToStreamSession,
+  applyRuntimeMediaFulfillmentPostureToStreamSession,
+  applyRuntimeRouteObservationToStreamSession,
+  collectRuntimeActivationKeys,
+  collectRuntimeIntentResultKeys,
+  collectRuntimeMediaFulfillmentKeys,
+  collectRuntimeObservationKeys,
+  collectRuntimeStreamFrameKeys,
+  runtimeIntentFrameId,
+  runtimeIntentPendingRoute,
+  runtimeIntentState,
+  runtimeIntentWaitingAuthority,
+  runtimeRouteObservationPosture,
+  runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
+} from "../../constitute-ui/src/runtime-stream-session.js";
+import {
+  applyBrowserStreamAnswer,
+  applyBrowserStreamCandidate,
+  browserStreamAvailable,
+  candidateKey,
+  collectBrowserMediaFulfillmentEvidence,
+  closeBrowserStreamSession,
+  createBrowserStreamOffer,
+  isRuntimeMediaTransportProfileFailure,
+  mediaFulfillmentEvidenceFromAdapterState,
+  mediaFulfillmentEvidenceFromRender,
+  mediaFulfillmentEvidenceFromTrack,
+  mediaFulfillmentReleaseEvidence,
+  mediaTransportObservationFromFulfillmentEvidence,
+  runtimeMediaIceServerUrls,
+  runtimeMediaIceServers,
+  runtimeMediaTransportBlockedDetail,
+  runtimeMediaTransportContract,
+  type BrowserStreamAdapterState,
+  type BrowserStreamSession,
+  type RuntimeMediaTransportProfile,
+} from "./browser-stream-adapter";
+import { createNvrAdminAdapter, normalizeNvrAdminAdapterError } from "./nvr-admin-adapter";
+import {
+  NVR_AUTO_PREVIEW_SOURCE_ID,
+  cameraCountForContext,
+  humanizeSourceId,
+  normalizeRuntimeCameraEntries,
+  normalizeSourceIds,
+  nvrDisplayFromRecord,
+  type GrantedScope,
+  type RuntimeCameraAccessDisplay,
+  type RuntimeServiceDisplay,
+} from "./nvr-projection-model";
+import {
+  STREAM_SESSION_LIFECYCLE_PHASE,
+  SWARM,
+  streamSessionLifecycleRecordFromCarrier,
+  type MediaFulfillmentEvidence,
+  type MediaTransportObservation,
+} from "../../constitute-protocol/src/index.js";
 
-type IceServerHints = {
-  stun?: string[];
-  turn?: string[];
+type RuntimeZoneScope = {
+  zoneId: string;
+  privacy?: string;
+  ttl?: number;
+  maxHops?: number;
 };
 
-type ServiceAccessCameraDisplay = {
-  sourceId?: string;
-  name?: string;
-  viewGranted?: boolean;
-  controlGranted?: boolean;
-  ptzCapable?: boolean;
-};
-
-type GrantedScope = {
-  owner?: boolean;
-  viewSources?: string[];
-  controlSources?: string[];
-  grantIds?: string[];
-};
-
-type ServiceAccessDisplay = {
-  serviceLabel?: string;
-  serviceVersion?: string;
-  service?: string;
-  status?: string;
-  cameraCount?: number;
-  configuredSources?: number;
-  sources?: string[];
-  cameras?: ServiceAccessCameraDisplay[];
-  iceServers?: IceServerHints;
-  grantedScope?: GrantedScope;
-};
-
-type ServiceAccessContext = {
+type RuntimeServiceContext = {
   contextId: string;
   app: string;
   repo: string;
@@ -46,49 +95,26 @@ type ServiceAccessContext = {
   gatewayPk: string;
   servicePk: string;
   service: string;
-  serviceCapability: string;
-  display?: ServiceAccessDisplay;
+  zoneScope?: RuntimeZoneScope;
+  display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
 };
 
-type ServiceAccessStage =
+type RuntimePreparedStage =
   | "surface_load"
-  | "service_access_context"
-  | "service_access_authorization"
-  | "service_signal"
-  | "webrtc_media";
+  | "runtime_context"
+  | "runtime_directory"
+  | "runtime_intent"
+  | "stream_projection"
+  | "stream_adapter";
 
-type PendingRequest<T> = {
-  resolve: (value: T) => void;
-  reject: (reason?: unknown) => void;
-  timer: number;
-};
-
-type GatewaySignalResult = {
-  requestId: string;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-};
-
-type GatewayGrantResult = {
-  requestId: string;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-};
-
-type GatewayServiceAccessResult = {
-  requestId: string;
-  gatewayPk: string;
-  servicePk: string;
-  service: string;
-  capability: string;
-  serviceCapability: string;
-  display?: ServiceAccessDisplay;
-  expiresAt: number;
-  ts: number;
+type RuntimeAuthorityPosture = {
+  state?: string;
+  ready?: boolean;
+  reason?: string;
+  blockedAuthorityDomain?: string;
+  devicePk?: string;
 };
 
 type GatewayGrantRecord = {
@@ -276,6 +302,7 @@ type CameraTile = {
   card: HTMLDivElement;
   video: HTMLVideoElement;
   title: HTMLDivElement;
+  streamStatus: HTMLDivElement;
   gearButton: HTMLButtonElement;
   ptzButton: HTMLButtonElement;
   videoWrap: HTMLDivElement;
@@ -291,6 +318,15 @@ type RuntimeSnapshot = {
   updatedAt?: number;
   shell?: Record<string, unknown> | null;
   services?: Record<string, unknown>;
+  serviceCatalog?: unknown;
+  edge?: Record<string, unknown>;
+  swarmQueue?: Record<string, unknown>;
+  projections?: Record<string, unknown> | unknown[];
+  projectionCoverage?: Record<string, unknown>;
+  projectionPolicies?: Record<string, unknown>;
+  activationResolutions?: Record<string, Record<string, unknown>>;
+  mediaFulfillment?: Record<string, Record<string, unknown>>;
+  streamRecovery?: Record<string, Record<string, unknown>>;
   managedAppliances?: {
     owned?: Array<Record<string, unknown>>;
     granted?: Array<Record<string, unknown>>;
@@ -298,11 +334,73 @@ type RuntimeSnapshot = {
   };
   resourceNames?: Record<string, unknown>;
   managedServiceIssue?: Record<string, unknown> | null;
-  serviceAccessContextCount?: number;
+  runtimeContextCount?: number;
 };
 
 type ManagedApplianceRecord = Record<string, unknown> & {
   __scope?: string;
+};
+
+type RuntimeProjectionRecord = Record<string, unknown> & {
+  channelId?: string;
+  service?: string;
+  servicePk?: string;
+  policyId?: string;
+  revision?: number | string;
+  retainedAt?: number;
+  payload?: Record<string, unknown>;
+  freshness?: Record<string, unknown>;
+};
+
+type RuntimeIntentResult = {
+  ok?: boolean;
+  state?: string;
+  pendingAuthority?: boolean;
+  authorityLifecycleState?: string;
+  blockedAuthorityDomain?: string;
+  authoritySummary?: Record<string, unknown>;
+  frameId?: string;
+  activationId?: string;
+  interactionId?: string;
+  routePromiseId?: string;
+  correlationId?: string;
+  pendingRoute?: boolean;
+  frame?: Record<string, unknown>;
+  result?: {
+    state?: string;
+    pendingAuthority?: boolean;
+    authorityLifecycleState?: string;
+    blockedAuthorityDomain?: string;
+    frameId?: string;
+    activationId?: string;
+    interactionId?: string;
+    routePromiseId?: string;
+    correlationId?: string;
+    pendingRoute?: boolean;
+    frame?: Record<string, unknown>;
+  };
+  error?: string;
+};
+
+type RuntimeStreamSession = BrowserStreamSession & {
+  serviceAdmissionTimedOut?: boolean;
+  runtimeBlockedReason?: string;
+  mediaPathState?: string;
+  mediaBlockedReason?: string;
+  mediaVisibleFrame?: boolean;
+  mediaTrackLive?: boolean;
+  mediaTransportUsable?: boolean;
+};
+
+type NvrProjectionState = {
+  health: Record<string, unknown> | null;
+  cameras: MountedCameraRecord[];
+  cameraNetwork: CameraNetworkSummaryRecord | null;
+  streamSources: string[];
+  streamStatusRecords: Array<Record<string, unknown>>;
+  storagePinIntents: Array<Record<string, unknown>>;
+  projectionRecords: Record<string, RuntimeProjectionRecord>;
+  updatedAt: number;
 };
 
 type CameraSettingsDraft = {
@@ -327,28 +425,45 @@ type CameraSettingsFocusSnapshot = {
 };
 
 const DIAGNOSTICS_STORAGE_KEY = "constitute.nvr.diagnostics";
-const SERVICE_ACCESS_REQUEST_TIMEOUT_MS = 6_000;
-const SERVICE_ACCESS_REFRESH_TIMEOUT_MS = 20_000;
-const SIGNAL_REQUEST_TIMEOUT_MS = 30_000;
-const ADMIN_SIGNAL_REQUEST_TIMEOUT_MS = 135_000;
+const ACCOUNT_IDENTITY_CACHE_KEY = "swarm.identityCache";
+const ACCOUNT_DEVICE_CACHE_KEY = "swarm.deviceCache";
+const ACCOUNT_GATEWAY_HOSTED_SNAPSHOTS_KEY = "constitute.gatewayHostedSnapshots";
+const ACCOUNT_GATEWAY_EXTRA_ZONES_KEY = "constitute.gateway.extraZones";
+const RUNTIME_STREAM_INTENT_TIMEOUT_MS = 30_000;
+const RUNTIME_STREAM_LIVE_WATCHDOG_MS = 8_000;
+const RUNTIME_STREAM_MEDIA_STATS_POLL_MS = 5_000;
+const RUNTIME_STREAM_RECONNECT_BASE_MS = 3_000;
+const RUNTIME_STREAM_RECONNECT_MAX_MS = 90_000;
+const RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID = "nvr-live-preview";
+const RUNTIME_AUTHORITY_RECONNECT_BASE_MS = 1_500;
+const RUNTIME_AUTHORITY_RECONNECT_MAX_MS = 30_000;
+const RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS = 30_000;
+const RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS = 120_000;
+const ADMIN_INTENT_TIMEOUT_MS = 135_000;
 const CAMERA_APPLY_REQUEST_TIMEOUT_MS = 135_000;
 const GRANT_REQUEST_TIMEOUT_MS = 30_000;
-const DIRECT_ENTRY_SERVICE_ACCESS_REQUEST_TIMEOUT_MS = 135_000;
-const DIRECT_ENTRY_SERVICE_ACCESS_RETRY_BASE_MS = 1_000;
-const DIRECT_ENTRY_SERVICE_ACCESS_RETRY_MAX_MS = 10_000;
-const RUNTIME_WORKER_VERSION = Object.freeze({ major: 2, minor: 12 });
-const RUNTIME_WORKER_BUILD_ID = `runtime-${RUNTIME_WORKER_VERSION.major}.${RUNTIME_WORKER_VERSION.minor}`;
-const RUNTIME_ATTACH_TIMEOUT_MS = 5_000;
+const RUNTIME_ATTACH_TIMEOUT_MS = 12_000;
 const RUNTIME_WRITE_TIMEOUT_MS = 10_000;
+const RUNTIME_AUTHORITY_WAIT_TIMEOUT_MS = 15_000;
+const RUNTIME_AUTHORITY_POLL_MS = 350;
 const DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS = 15_000;
 const DIRECT_ENTRY_ACCOUNT_HYDRATION_POLL_MS = 350;
 const DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS = 2_000;
-const SERVICE_ACCESS_REFRESH_SKEW_MS = 15_000;
+const DIRECT_ENTRY_REPAIR_DELAY_MS = 1_500;
+const DIRECT_ENTRY_REPAIR_MAX_DELAY_MS = 5_000;
+const DIRECT_ENTRY_REPAIR_MAX_ATTEMPTS = 30;
 const PTZ_STEP_DEGREES = 10;
 const PTZ_STEP_NORMALIZED = PTZ_STEP_DEGREES / 180;
 // Keep PTZ hidden until the driver reports a verified control surface.
 // The current Reolink control path is not reliable enough to expose generically.
 const PTZ_UI_ENABLED = false;
+const NVR_PROJECTION_CHANNELS = Object.freeze([
+  "nvr.surface",
+  "nvr.health",
+  "nvr.cameras",
+  "nvr.cameraNetwork",
+  "nvr.streams",
+]);
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -394,17 +509,17 @@ const cameraRefreshStatusEl = shell.cameraRefreshStatusEl;
 const nvrSettingsSummaryEl = document.getElementById("nvrSettingsSummary") as HTMLDivElement | null;
 
 const cameraTiles = new Map<string, CameraTile>();
-const serviceAccessCameraInfoBySourceId = new Map<string, ServiceAccessCameraDisplay>();
+const runtimeCameraInfoBySourceId = new Map<string, RuntimeCameraAccessDisplay>();
 const notifications: NotificationEntry[] = [];
 
+let runtimeClient: ReturnType<typeof createRuntimeSurfaceClient> | null = null;
 let runtimePort: MessagePort | null = null;
-let runtimeRequestSeq = 1;
-const pendingRuntimeResponses = new Map<string, PendingRequest<unknown>>();
-let runtimeReadyPromise: Promise<MessagePort | null> | null = null;
-let resolveRuntimeReady: ((value: MessagePort | null) => void) | null = null;
-let serviceAccessContext: ServiceAccessContext | null = null;
-let peerConnection: RTCPeerConnection | null = null;
-let transceiverSourceIds: string[] = [];
+let runtimeAttached = false;
+let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
+let runtimeServiceContext: RuntimeServiceContext | null = null;
+let directEntryRepairTimer = 0;
+let directEntryRepairInFlight: Promise<void> | null = null;
+let directEntryRepairAttemptCount = 0;
 let diagnosticsEnabled = false;
 let bootSplashDismissed = false;
 let grantInventory: GrantInventory | null = null;
@@ -423,7 +538,21 @@ const cameraProbeResults = new Map<string, ProbeResultRecord>();
 const currentPoseBySourceId = new Map<string, CameraPoseView>();
 const desiredPoseBySourceId = new Map<string, CameraPoseView>();
 const poseStatusBySourceId = new Map<string, string>();
+const runtimeStreamSessionsByFrameId = new Map<string, RuntimeStreamSession>();
+const runtimeStreamSessionsBySessionId = new Map<string, RuntimeStreamSession>();
+const runtimeStreamSessionsByCorrelationKey = new Map<string, RuntimeStreamSession>();
 const knownCandidateIds = new Set<string>();
+const unboundRuntimeStreamFrameKeys = new Set<string>();
+let nvrProjectionState: NvrProjectionState = {
+  health: null,
+  cameras: [],
+  cameraNetwork: null,
+  streamSources: [],
+  streamStatusRecords: [],
+  storagePinIntents: [],
+  projectionRecords: {},
+  updatedAt: 0,
+};
 let cameraInventory: CameraInventoryRecord | null = null;
 let cameraInventoryLoading = false;
 let cameraInventoryError = "";
@@ -431,41 +560,48 @@ let cameraInventoryRefreshPromise: Promise<void> | null = null;
 let expandedCandidateId = "";
 let notificationMenuOpen = false;
 let accountCenterOpen = false;
-let serviceAccessRefreshPromise: Promise<ServiceAccessContext> | null = null;
 let scheduledReconnectTimer = 0;
+let streamLiveWatchdogTimer = 0;
 let reconnectInFlight: Promise<void> | null = null;
+let reconnectScheduleInFlight = false;
+let routeBaselineNoticeAt = 0;
+let runtimeEdgeAttachRepairTarget = "";
+let runtimeEdgeAttachRepairAttemptedAt = 0;
+let runtimeEdgeAttachRepairBackoffUntil = 0;
+let runtimeEdgeAttachRepairFailureCount = 0;
+let runtimeEdgeAttachRepairInFlight: Promise<boolean> | null = null;
+let runtimeEdgeAttachRepairInFlightTarget = "";
 let reconnectAttemptCount = 0;
 let accountBridgeFrame: HTMLIFrameElement | null = null;
 let accountBridgePromise: Promise<void> | null = null;
-let directEntryServiceAccessAttempted = false;
 
-function ptzUiCapable(camera: ServiceAccessCameraDisplay | null | undefined): boolean {
+function ptzUiCapable(camera: RuntimeCameraAccessDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true;
 }
 
-function ptzUiInteractive(camera: ServiceAccessCameraDisplay | null | undefined): boolean {
+function ptzUiInteractive(camera: RuntimeCameraAccessDisplay | null | undefined): boolean {
   return PTZ_UI_ENABLED && camera?.ptzCapable === true && camera?.controlGranted === true;
 }
 
-class ServiceAccessError extends Error {
-  stage: ServiceAccessStage;
+class RuntimeContextError extends Error {
+  stage: RuntimePreparedStage;
   detail: string;
 
-  constructor(stage: ServiceAccessStage, detail: string) {
+  constructor(stage: RuntimePreparedStage, detail: string) {
     super(`${stage}: ${detail}`);
-    this.name = "ServiceAccessError";
+    this.name = "RuntimeContextError";
     this.stage = stage;
     this.detail = detail;
   }
 }
 
-function serviceAccessError(stage: ServiceAccessStage, detail: string): ServiceAccessError {
-  return new ServiceAccessError(stage, String(detail || "Unknown error").trim() || "Unknown error");
+function runtimeContextError(stage: RuntimePreparedStage, detail: string): RuntimeContextError {
+  return new RuntimeContextError(stage, String(detail || "Unknown error").trim() || "Unknown error");
 }
 
-function asServiceAccessError(error: unknown, fallbackStage: ServiceAccessStage): ServiceAccessError {
-  if (error instanceof ServiceAccessError) return error;
-  return serviceAccessError(fallbackStage, String((error as Error)?.message || error || "Unknown error"));
+function asRuntimeContextError(error: unknown, fallbackStage: RuntimePreparedStage): RuntimeContextError {
+  if (error instanceof RuntimeContextError) return error;
+  return runtimeContextError(fallbackStage, String((error as Error)?.message || error || "Unknown error"));
 }
 
 function appendLog(message: string): void {
@@ -582,9 +718,16 @@ function rememberResolvedResourceName(pk: unknown, label: unknown): void {
 function absorbRuntimeSnapshot(snapshot: unknown): void {
   runtimeSnapshot = (snapshot && typeof snapshot === "object") ? snapshot as RuntimeSnapshot : null;
   const names = runtimeSnapshot?.resourceNames;
-  if (!names || typeof names !== "object") return;
-  for (const [pk, label] of Object.entries(names)) {
-    rememberResolvedResourceName(pk, label);
+  if (names && typeof names === "object") {
+    for (const [pk, label] of Object.entries(names)) {
+      rememberResolvedResourceName(pk, label);
+    }
+  }
+  applyRuntimeActivationPostureFromSnapshot();
+  applyRuntimeMediaFulfillmentPostureFromSnapshot();
+  applyNvrRuntimeProjections();
+  if (!runtimeServiceContext && directEntryNvrServiceRecord(runtimeSnapshot)) {
+    scheduleDirectEntryRuntimeRepair("runtime snapshot advertised Security Cameras");
   }
 }
 
@@ -600,25 +743,16 @@ function pkLabel(value: string): string {
   return resolvedResourceName(raw, shortPk(raw));
 }
 
-function serviceLabelForContext(context: ServiceAccessContext | null): string {
+function serviceLabelForContext(context: RuntimeServiceContext | null): string {
   if (!context) return "Constitute NVR";
   const explicit = String(context.display?.serviceLabel || "").trim();
   if (explicit) return explicit;
   return resolvedResourceName(context.servicePk, shortPk(context.servicePk));
 }
 
-function gatewayLabelForContext(context: ServiceAccessContext | null): string {
+function gatewayLabelForContext(context: RuntimeServiceContext | null): string {
   if (!context) return "—";
   return resolvedResourceName(context.gatewayPk, shortPk(context.gatewayPk));
-}
-
-function humanizeSourceId(sourceId: string): string {
-  const raw = String(sourceId || "").trim();
-  if (!raw) return "Camera";
-  if (raw.startsWith("reolink-")) return "Reolink Camera";
-  return raw
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function cameraDisplayName(sourceId: string): string {
@@ -635,7 +769,7 @@ function cameraDisplayName(sourceId: string): string {
   const available = availableCameraInfo(key);
   const availableLabel = String(available?.name || "").trim();
   if (availableLabel) return availableLabel;
-  const base = serviceAccessCameraInfoBySourceId.get(key);
+  const base = runtimeCameraInfoBySourceId.get(key);
   const baseLabel = String(base?.name || "").trim();
   if (baseLabel && !baseLabel.includes("192.168.")) return baseLabel;
   return humanizeSourceId(key);
@@ -667,7 +801,7 @@ function readUiState(): { contextId: string; activity: NvrActivity; settingsTab:
   const activity = String(params.get("activity") || "live").trim().toLowerCase();
   const settingsTab = String(params.get("settings") || "nvr").trim().toLowerCase();
   return {
-    contextId: String(params.get("serviceAccess") || "").trim(),
+    contextId: String(params.get("context") || "").trim(),
     activity: activity === "history" || activity === "settings" ? activity : "live",
     settingsTab: settingsTab === "cameras" ? settingsTab : "nvr",
     cameraId: String(params.get("camera") || "").trim(),
@@ -680,7 +814,7 @@ function writeUiState(
 ): void {
   const current = readUiState();
   const params = new URLSearchParams();
-  if (current.contextId) params.set("serviceAccess", current.contextId);
+  if (current.contextId) params.set("context", current.contextId);
   const activity = partial.activity ?? current.activity;
   const settingsTab = partial.settingsTab ?? current.settingsTab;
   const cameraId = partial.cameraId !== undefined ? partial.cameraId : current.cameraId;
@@ -696,16 +830,20 @@ function writeUiState(
   syncUiToHash();
 }
 
-function parseServiceAccessId(): string {
+function parseRuntimeContextId(): string {
   return readUiState().contextId;
 }
 
 function readDiagnosticsPreference(): boolean {
-  const params = hashParams();
+  const hash = hashParams();
+  const query = new URLSearchParams(window.location.search || "");
   const requested = String(
-    params.get("diagnostics") ||
-    params.get("diag") ||
-    params.get("debug") ||
+    query.get("diagnostics") ||
+    query.get("diag") ||
+    query.get("debug") ||
+    hash.get("diagnostics") ||
+    hash.get("diag") ||
+    hash.get("debug") ||
     "",
   ).trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(requested)) return true;
@@ -797,29 +935,27 @@ function toggleNotificationMenu(): void {
   }
 }
 
-function identityHandleForContext(context: ServiceAccessContext | null): string {
-  const identityId = String(context?.identityId || "").trim();
-  if (!identityId) return "@unlinked";
-  const runtimeHandle = runtimeIdentityHandle();
+function shellDeriveContext(context: RuntimeServiceContext | null = runtimeServiceContext): Record<string, unknown> {
+  return context || browserStorageShellContext();
+}
+
+function identityHandleForContext(context: RuntimeServiceContext | null): string {
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(context), adapterLive: hasLiveTiles() });
+  if (!shellState.identity.linked) return "@unlinked";
+  const runtimeHandle = shellState.identity.handle;
   if (runtimeHandle !== "@linked") return runtimeHandle;
+  const identityId = shellState.identity.identityId || String(context?.identityId || "").trim();
   const label = String(resolvedResourceNames.get(identityId) || "").trim().replace(/^@+/, "");
   return label ? `@${label}` : runtimeHandle;
 }
 
-function runtimeIdentityHandle(): string {
-  const rawLabel = String(runtimeSnapshot?.shell?.identity?.label || "").trim().replace(/^@+/, "");
-  if (rawLabel) return `@${rawLabel}`;
-  return "@linked";
-}
-
 function refreshIdentityHandle(): void {
-  const identityId = String(serviceAccessContext?.identityId || "").trim();
-  const linked = Boolean(identityId);
-  identityHandleEl.textContent = identityHandleForContext(serviceAccessContext);
-  identityHandleEl.classList.toggle("identityHandle-linked", linked);
-  identityHandleEl.classList.toggle("identityHandle-unlinked", !linked);
-  identityHandleEl.title = linked ? "Open account center" : "Open account center";
-  identityHandleEl.setAttribute("aria-label", identityId ? `Identity ${identityId}` : "Identity not linked");
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasLiveTiles() });
+  identityHandleEl.textContent = identityHandleForContext(runtimeServiceContext);
+  identityHandleEl.classList.toggle("identityHandle-linked", shellState.identity.linked);
+  identityHandleEl.classList.toggle("identityHandle-unlinked", !shellState.identity.linked);
+  identityHandleEl.title = shellState.identity.title;
+  identityHandleEl.setAttribute("aria-label", shellState.identity.ariaLabel);
   renderAccountCenter();
 }
 
@@ -850,38 +986,13 @@ function openAccountCenterApp(targetHash = ""): void {
 }
 
 function renderAccountCenter(): void {
-  const identityId = String(serviceAccessContext?.identityId || "").trim();
-  const handle = identityHandleForContext(serviceAccessContext);
-  const connection = String(connStateTextEl.textContent || "Offline").trim() || "Offline";
-  renderAccountCenterSummary(accountCenterSummaryEl, {
-    handle,
-    linked: Boolean(identityId),
-    connectionLabel: connection,
-    connectionToneClass: Array.from(connStateTextEl.classList)
-      .find((value) => value.startsWith("connStateText-") && value !== "connStateText")
-      || "connStateText-offline",
-  });
+  accountCenterSummaryEl.replaceChildren();
   renderActionList(accountCenterActionsEl, [
     {
       id: "account.open_center",
       label: "Open Account Center",
       description: "Open constitute-account.",
       onSelect: () => openAccountCenterApp("activity=home"),
-    },
-    {
-      id: "account.copy_identity",
-      label: "Copy Identity ID",
-      description: identityId ? "Copy the linked identity id." : "Identity is not linked yet.",
-      disabled: !identityId,
-      onSelect: async () => {
-        if (!identityId) return;
-        try {
-          await navigator.clipboard.writeText(identityId);
-          addNotification("good", "Identity copied", "Copied the linked identity id.", "account");
-        } catch (error) {
-          addNotification("bad", "Identity copy failed", String((error as Error)?.message || error), "account");
-        }
-      },
     },
   ]);
 }
@@ -945,9 +1056,7 @@ function closeCameraSettings(): void {
 }
 
 function runtimeWorkerUrl(): string {
-  const target = new URL("/constitute-account/runtime.worker.js", window.location.origin);
-  target.searchParams.set("v", RUNTIME_WORKER_BUILD_ID);
-  return target.toString();
+  return accountRuntimeWorkerScriptUrl(window.location.origin);
 }
 
 function accountBridgeUrl(): string {
@@ -999,102 +1108,272 @@ async function ensureAccountBridge(reason = ""): Promise<void> {
   }
 }
 
-function handleRuntimeMessage(message: unknown): void {
-  if (!message || typeof message !== "object") return;
+function handleRuntimeMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") return false;
   const payload = message as Record<string, unknown>;
+  if (runtimeDiagnosticsAgent?.handleMessage(payload)) return true;
   const type = String(payload.type || "").trim();
   if (type === "runtime.attached" || type === "runtime.snapshot") {
-    absorbRuntimeSnapshot(payload.snapshot);
-    if (type === "runtime.attached" && resolveRuntimeReady) {
-      resolveRuntimeReady(runtimePort);
-      resolveRuntimeReady = null;
-    }
-    appendLog(`runtime ${type === "runtime.attached" ? "attached" : "snapshot"} ${String(payload.buildId || "")}`.trim());
-    refreshRuntimeProjectionLabels();
-    return;
+    return false;
   }
   if (type === "runtime.ack") {
-    appendLog(`runtime ack ${String(payload.kind || "").trim()} ${payload.ok === false ? String(payload.error || "failed") : "ok"}`.trim());
+    return true;
+  }
+  if (type === "swarm.edge.ack") {
+    return true;
+  }
+  if (type === "swarm.edge.reject") {
+    const rejection = payload.rejection && typeof payload.rejection === "object" ? payload.rejection as Record<string, unknown> : {};
+    const error = rejection.error && typeof rejection.error === "object" ? rejection.error as Record<string, unknown> : {};
+    const detail = String(error.message || error.code || "runtime route rejected").trim();
+    setConnectionState("unavailable", "bad");
+    setDrawerStatus(detail);
+    if (cameraTiles.size > 0) markAllTiles("unavailable", detail);
+    return true;
+  }
+  if (type === "swarm.edge.routeObservation") {
+    handleRuntimeRouteObservation(payload.observation as Record<string, unknown> | undefined);
+    return true;
+  }
+  if (type === "swarm.edge.frame") {
+    handleRuntimeStreamFrame(payload.frame as Record<string, unknown> | undefined);
+    return true;
+  }
+  return false;
+}
+
+function handleRuntimeRouteObservation(observation: Record<string, unknown> | undefined): void {
+  if (!observation || typeof observation !== "object") return;
+  const posture = runtimeRouteObservationPosture(observation) as {
+    routeDelivered?: boolean;
+    routeDegraded?: boolean;
+    routeReleased?: boolean;
+    routeRejected?: boolean;
+    routeState?: string;
+    detail?: string;
+  };
+  const session = streamSessionForRuntimeKeys(collectRuntimeObservationKeys(observation));
+  if (session) applyRuntimeRouteObservationToStreamSession(session, observation);
+  const detail = String(posture.detail || "route observation").trim();
+  if (posture.routeDelivered) {
+    if (hasLiveTiles()) {
+      setConnectionState("live", "good");
+      setDrawerStatus("Live preview connected.");
+      return;
+    }
+    setConnectionState("connecting", "warn");
+    const routeStatus = posture.routeState === "routeAccepted"
+      ? "Stream route carrier acknowledged."
+      : "Stream route delivered.";
+    setDrawerStatus(routeStatus);
     return;
   }
-  if (type !== "runtime.response") return;
-  const requestId = String(payload.requestId || "").trim();
-  const pending = pendingRuntimeResponses.get(requestId);
-  if (!pending) return;
-  clearTimeout(pending.timer);
-  pendingRuntimeResponses.delete(requestId);
-  if (payload.ok === false) {
-    pending.reject(new Error(String(payload.error || "runtime request failed")));
+  if (posture.routeDegraded) {
+    setConnectionState("degraded", "warn");
+    setDrawerStatus(detail || "Stream route degraded.");
+    if (cameraTiles.size > 0) markAllTiles("connecting", detail || "Stream route degraded.");
     return;
   }
-  pending.resolve(payload.result);
+  if (posture.routeReleased) {
+    setConnectionState("unavailable", "warn");
+    setDrawerStatus(detail || "Stream route closed.");
+    if (cameraTiles.size > 0) markAllTiles("unavailable", detail || "Stream route closed.");
+    return;
+  }
+  if (posture.routeRejected) {
+    setConnectionState("unavailable", "bad");
+    setDrawerStatus(detail || "Stream route unreachable.");
+    if (cameraTiles.size > 0) markAllTiles("unavailable", detail || "Stream route unreachable.");
+  }
+}
+
+function streamSessionForFrame(frame: Record<string, unknown>, record: Record<string, unknown>): RuntimeStreamSession | null {
+  return streamSessionForRuntimeKeys(collectRuntimeStreamFrameKeys(frame, record));
+}
+
+function streamSessionForRuntimeKeys(keys: Set<string>): RuntimeStreamSession | null {
+  for (const key of keys) {
+    if (runtimeStreamSessionsBySessionId.has(key)) return runtimeStreamSessionsBySessionId.get(key) || null;
+    if (runtimeStreamSessionsByFrameId.has(key)) return runtimeStreamSessionsByFrameId.get(key) || null;
+    if (runtimeStreamSessionsByCorrelationKey.has(key)) return runtimeStreamSessionsByCorrelationKey.get(key) || null;
+  }
+  return null;
+}
+
+function applyRuntimeActivationPostureFromSnapshot(): void {
+  const activations = runtimeSnapshot?.activationResolutions;
+  if (!activations || typeof activations !== "object") return;
+  for (const activation of Object.values(activations)) {
+    if (!activation || typeof activation !== "object") continue;
+    const keys = collectRuntimeActivationKeys(activation);
+    const session = streamSessionForRuntimeKeys(keys);
+    if (!session) continue;
+    applyRuntimeActivationPostureToStreamSession(session, activation);
+  }
+}
+
+function applyRuntimeMediaFulfillmentPostureFromSnapshot(): void {
+  const fulfillments = runtimeSnapshot?.mediaFulfillment;
+  if (!fulfillments || typeof fulfillments !== "object") return;
+  for (const posture of Object.values(fulfillments)) {
+    if (!posture || typeof posture !== "object") continue;
+    const keys = collectRuntimeMediaFulfillmentKeys(posture);
+    const session = streamSessionForRuntimeKeys(keys);
+    if (!session) continue;
+    const state = applyRuntimeMediaFulfillmentPostureToStreamSession(session, posture);
+    if (state === "blocked") {
+      handleRuntimeStreamStaleMedia(session, session.mediaBlockedReason || "mediaTransportBlocked");
+    }
+  }
+}
+
+function noteUnboundRuntimeStreamFrame(recordKind: string, keys: Set<string>): void {
+  if (!recordKind.startsWith("stream.")) return;
+  const displayKeys = Array.from(keys).slice(0, 4);
+  const marker = `${recordKind}:${displayKeys.join("|") || "no-key"}`;
+  if (unboundRuntimeStreamFrameKeys.has(marker)) return;
+  if (unboundRuntimeStreamFrameKeys.size > 32) unboundRuntimeStreamFrameKeys.clear();
+  unboundRuntimeStreamFrameKeys.add(marker);
+  appendLog(`stream frame unbound: ${recordKind}${displayKeys.length ? ` (${displayKeys.join(", ")})` : ""}`);
+}
+
+async function applyRuntimeStreamFrame(frame: Record<string, unknown>): Promise<void> {
+  const lifecycle = streamSessionLifecycleRecordFromCarrier(frame);
+  if (!lifecycle) return;
+  const { recordKind, phase } = lifecycle;
+  const record = lifecycle.record as Record<string, unknown>;
+  const frameKeys = collectRuntimeStreamFrameKeys(frame, record);
+  const session = streamSessionForFrame(frame, record);
+  if (!session) {
+    noteUnboundRuntimeStreamFrame(recordKind, frameKeys);
+    return;
+  }
+  if (phase === STREAM_SESSION_LIFECYCLE_PHASE.ADMISSION) {
+    session.serviceAccepted = true;
+    session.serviceRejected = false;
+    session.serviceAdmissionTimedOut = false;
+    session.runtimeBlockedReason = "";
+    session.routePending = false;
+    session.routeState = "serviceAccepted";
+    setTileState(session.sourceId, "connecting", "Stream service accepted.");
+    setDrawerStatus("Stream service accepted; waiting for answer.");
+    void reportServiceStatus("connecting", "Stream service accepted; waiting for answer.", "stream_projection");
+    return;
+  }
+  if (phase === STREAM_SESSION_LIFECYCLE_PHASE.REJECT) {
+    const reason = String(record.reasonCode || record.reason || "service rejected").trim();
+    session.serviceRejected = true;
+    session.serviceAdmissionTimedOut = false;
+    session.runtimeBlockedReason = reason;
+    session.routePending = false;
+    session.routeState = "serviceRejected";
+    setTileState(session.sourceId, "unavailable", `Stream service rejected: ${reason}.`);
+    setDrawerStatus(`Stream service rejected: ${reason}.`);
+    void reportServiceStatus("unavailable", `Stream service rejected: ${reason}.`, "stream_projection");
+    return;
+  }
+  if (phase === STREAM_SESSION_LIFECYCLE_PHASE.ANSWER) {
+    const answerPayload = record.payload && typeof record.payload === "object" ? record.payload as Record<string, unknown> : {};
+    const description = answerPayload.description && typeof answerPayload.description === "object"
+      ? answerPayload.description as RTCSessionDescriptionInit
+      : null;
+    if (!description) throw new Error("stream answer missing description");
+    await applyBrowserStreamAnswer(session, description);
+    session.serviceAccepted = true;
+    session.serviceRejected = false;
+    session.serviceAdmissionTimedOut = false;
+    session.runtimeBlockedReason = "";
+    session.routePending = false;
+    session.routeState = "serviceAccepted";
+    session.answerReceived = true;
+    setTileState(session.sourceId, "connecting", "Live preview answer received.");
+    setDrawerStatus("Stream answer received; waiting for media track.");
+    void reportServiceStatus("connecting", "Stream answer received; waiting for media track.", "stream_projection");
+    return;
+  }
+  if (phase === STREAM_SESSION_LIFECYCLE_PHASE.CANDIDATE) {
+    const candidatePayload = record.payload && typeof record.payload === "object" ? record.payload as Record<string, unknown> : {};
+    const candidate = candidatePayload.candidate && typeof candidatePayload.candidate === "object"
+      ? candidatePayload.candidate as RTCIceCandidateInit
+      : null;
+    if (candidate) {
+      await applyBrowserStreamCandidate(session, candidate);
+    }
+    return;
+  }
+  if (phase === STREAM_SESSION_LIFECYCLE_PHASE.HEALTH) {
+    const status = String(record.status || "").trim();
+    session.healthStatus = status;
+    if (status) setTileState(session.sourceId, status === "closed" ? "unavailable" : "connecting", `Stream ${status}.`);
+  }
+}
+
+function handleRuntimeStreamFrame(frame: Record<string, unknown> | undefined): void {
+  if (!frame || typeof frame !== "object") return;
+  void applyRuntimeStreamFrame(frame).catch((error) => {
+    appendLog(`stream frame apply failed: ${String((error as Error)?.message || error)}`);
+  });
 }
 
 async function ensureRuntimePort(): Promise<MessagePort | null> {
-  if (runtimeReadyPromise) return await runtimeReadyPromise;
+  if (runtimeClient?.attached && runtimeClient.port) return runtimeClient.port as MessagePort;
   if (typeof SharedWorker === "undefined") return null;
-  runtimeReadyPromise = new Promise<MessagePort | null>((resolve) => {
-    const timeout = window.setTimeout(() => {
-      if (resolveRuntimeReady) {
-        resolveRuntimeReady(null);
-        resolveRuntimeReady = null;
-      }
-      runtimeReadyPromise = null;
-      runtimePort = null;
-      appendLog("runtime attach unavailable");
-    }, RUNTIME_ATTACH_TIMEOUT_MS);
-    resolveRuntimeReady = (value) => {
-      window.clearTimeout(timeout);
-      resolve(value);
-    };
-    try {
-      const worker = new SharedWorker(runtimeWorkerUrl(), {
-        type: "module",
-        name: `constitute-account-runtime-${RUNTIME_WORKER_BUILD_ID}`,
-      });
-      try {
-        worker.onerror = (event: ErrorEvent) => {
-          appendLog(`runtime worker error: ${String(event?.message || "worker failure")}`);
-        };
-      } catch {}
-      runtimePort = worker.port;
-      runtimePort.start();
-      runtimePort.onmessage = (event) => handleRuntimeMessage(event.data);
-      runtimePort.postMessage({
-        type: "runtime.attach",
-        clientId: randomOpaqueId("runtime-nvr"),
-        surface: "constitute-nvr-ui",
-        broker: false,
-      });
-    } catch (error) {
-      window.clearTimeout(timeout);
-      appendLog(`runtime attach unavailable (${String((error as Error)?.message || error)})`);
-      runtimePort = null;
-      runtimeReadyPromise = null;
-      resolveRuntimeReady = null;
-      resolve(null);
-    }
-  });
-  return await runtimeReadyPromise;
+  if (!runtimeClient) {
+    runtimeClient = createRuntimeSurfaceClient({
+      clientId: randomOpaqueId("runtime-nvr"),
+      surface: "constitute-nvr-ui",
+      workerUrl: runtimeWorkerUrl(),
+      workerName: runtimeSharedWorkerName(),
+      attachTimeoutMs: RUNTIME_ATTACH_TIMEOUT_MS,
+      callTimeoutMs: RUNTIME_WRITE_TIMEOUT_MS,
+      debug: diagnosticsEnabled,
+      debugInfo: runtimeAttachDebugInfo(window.location.origin),
+      logPrefix: "nvr-ui",
+      onPort: (port) => {
+        runtimePort = port as MessagePort;
+        runtimeAttached = false;
+        runtimeDiagnosticsAgent = attachRuntimeDiagnostics({
+          port: runtimePort,
+          surface: "constitute-nvr-ui",
+          clientId: "nvr-ui",
+          enabled: diagnosticsEnabled,
+          planes: [...RUNTIME_DIAGNOSTIC_OPERATOR_PLANES],
+          minLevelByPlane: { diagnostic: "warn" },
+          denyKinds: ["projection.applied", "projection.ignored"],
+        });
+      },
+      onMessage: (msg) => handleRuntimeMessage(msg),
+      onSnapshot: (snapshot) => {
+        runtimePort = runtimeClient?.port as MessagePort | null;
+        runtimeAttached = Boolean(runtimePort);
+        absorbRuntimeSnapshot(snapshot);
+        refreshRuntimeProjectionLabels();
+      },
+      onAttachTimeout: () => {
+        runtimeAttached = false;
+        appendLog("runtime attach unavailable");
+      },
+      onAttachError: (error) => {
+        runtimePort = null;
+        runtimeAttached = false;
+        appendLog(`runtime attach unavailable (${String((error as Error)?.message || error)})`);
+      },
+      onWorkerError: (event) => {
+        runtimeAttached = false;
+        appendLog(`runtime worker error: ${String((event as ErrorEvent)?.message || "worker failure")}`);
+      },
+    });
+  }
+  runtimePort = runtimeClient.attach() as MessagePort | null;
+  const attachedPort = await runtimeClient.waitUntilAttached(RUNTIME_ATTACH_TIMEOUT_MS) as MessagePort | null;
+  runtimeAttached = Boolean(attachedPort);
+  return attachedPort;
 }
 
 async function runtimeCall<T = unknown>(type: string, payload: Record<string, unknown>, timeoutMs: number): Promise<T> {
   const port = await ensureRuntimePort();
-  if (!port) throw new Error("shared browser runtime unavailable");
-  const requestId = randomOpaqueId("runtime");
-  const promise = new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      pendingRuntimeResponses.delete(requestId);
-      reject(new Error(`${type} timed out`));
-    }, timeoutMs);
-    pendingRuntimeResponses.set(requestId, { resolve, reject, timer });
-  });
-  port.postMessage({
-    type,
-    requestId,
-    ...payload,
-  });
-  return await promise;
+  if (!port || !runtimeClient) throw new Error("shared browser runtime unavailable");
+  return await runtimeClient.call(type, payload, timeoutMs) as T;
 }
 
 async function runtimeBrokerCall<T = unknown>(
@@ -1113,7 +1392,7 @@ async function runtimeBrokerCall<T = unknown>(
   }
 }
 
-async function reportServiceStatus(state: string, reason: string, stage: ServiceAccessStage | "" = ""): Promise<void> {
+async function reportServiceStatus(state: string, reason: string, stage: RuntimePreparedStage | "" = ""): Promise<void> {
   try {
     await runtimeCall("runtime.status.put", {
       role: "service",
@@ -1129,8 +1408,62 @@ async function reportServiceStatus(state: string, reason: string, stage: Service
   } catch {}
 }
 
-async function requestServiceAccessContextFromRuntime(contextId: string): Promise<ServiceAccessContext | null> {
-  return await runtimeCall<ServiceAccessContext | null>(BROKER.SERVICE_ACCESS_CONTEXT_GET, { contextId }, SERVICE_ACCESS_REQUEST_TIMEOUT_MS);
+function runtimeAuthorityReady(posture: RuntimeAuthorityPosture | null | undefined): boolean {
+  return posture?.ready === true || String(posture?.state || "").trim() === "ready";
+}
+
+function runtimeAuthorityBlockedDetail(posture: RuntimeAuthorityPosture | null | undefined): string {
+  const state = String(posture?.state || "waitingAuthority").trim() || "waitingAuthority";
+  const reason = String(posture?.reason || "").trim();
+  const domain = String(posture?.blockedAuthorityDomain || "runtime").trim();
+  return reason || `Runtime authority is ${state} for ${domain}.`;
+}
+
+function markRuntimeAuthorityWaiting(posture: RuntimeAuthorityPosture | null | undefined): void {
+  const detail = runtimeAuthorityBlockedDetail(posture);
+  appendLog(`waiting for runtime authority: ${detail}`);
+  setConnectionState("waiting authority", "warn");
+  setDrawerStatus("Waiting for runtime authority.");
+  for (const sourceId of cameraTiles.keys()) {
+    setTileState(sourceId, "waiting", detail);
+  }
+  void reportServiceStatus("waitingAuthority", detail, "runtime_intent");
+}
+
+async function runtimeAuthorityPosture(): Promise<RuntimeAuthorityPosture | null> {
+  return await runtimeCall<RuntimeAuthorityPosture>(RUNTIME_AUTHORITY_POSTURE_GET, {}, RUNTIME_WRITE_TIMEOUT_MS);
+}
+
+async function runtimeMediaTransportProfile(): Promise<RuntimeMediaTransportProfile> {
+  try {
+    const profile = await runtimeCall<RuntimeMediaTransportProfile>(RUNTIME_MEDIA_TRANSPORT_PROFILE_GET, {}, RUNTIME_WRITE_TIMEOUT_MS);
+    if (!profile || typeof profile !== "object") {
+      throw new Error("runtime returned no media transport profile");
+    }
+    return profile;
+  } catch (error) {
+    throw runtimeContextError("runtime_intent", runtimeMediaTransportBlockedDetail(error));
+  }
+}
+
+async function waitForRuntimeAuthorityReady(timeoutMs = RUNTIME_AUTHORITY_WAIT_TIMEOUT_MS): Promise<RuntimeAuthorityPosture | null> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastPosture: RuntimeAuthorityPosture | null = null;
+  let reportedWaiting = false;
+  while (Date.now() <= deadline) {
+    const posture = await runtimeAuthorityPosture();
+    lastPosture = posture;
+    if (runtimeAuthorityReady(posture)) return posture;
+    if (!reportedWaiting) {
+      reportedWaiting = true;
+      markRuntimeAuthorityWaiting(posture);
+      void ensureAccountBridge("runtime authority").catch(() => {});
+    }
+    const state = String(posture?.state || "").trim();
+    if (state === "expired" || state === "revoked" || state === "ambiguous" || state === "unavailable") break;
+    await delay(RUNTIME_AUTHORITY_POLL_MS);
+  }
+  return lastPosture;
 }
 
 function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
@@ -1153,6 +1486,209 @@ function accountRuntimeIdentityResolved(snapshot: RuntimeSnapshot | null): boole
   return typeof identity?.linked === "boolean";
 }
 
+function parseLocalJson(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function localStorageRecordList(key: string): Record<string, unknown>[] {
+  const value = parseLocalJson(window.localStorage.getItem(key));
+  const records = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).records
+    : value;
+  return Array.isArray(records)
+    ? records.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+}
+
+function localGatewayHostedSnapshots(): Record<string, unknown>[] {
+  const value = parseLocalJson(window.localStorage.getItem(ACCOUNT_GATEWAY_HOSTED_SNAPSHOTS_KEY));
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const out: Record<string, unknown>[] = [];
+  for (const [gatewayPk, snapshot] of Object.entries(value as Record<string, unknown>)) {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) continue;
+    const source = snapshot as Record<string, unknown>;
+    out.push({
+      ...source,
+      devicePk: String(source.devicePk || source.gatewayPk || gatewayPk).trim(),
+      hostGatewayPk: String(source.hostGatewayPk || source.gatewayPk || gatewayPk).trim(),
+      role: "gateway",
+      service: "gateway",
+      deviceKind: "gateway",
+    });
+    for (const service of Array.isArray(source.hostedServices) ? source.hostedServices : []) {
+      if (!service || typeof service !== "object" || Array.isArray(service)) continue;
+      const record = service as Record<string, unknown>;
+      out.push({
+        ...record,
+        devicePk: String(record.devicePk || record.servicePk || record.pk || "").trim(),
+        pk: String(record.devicePk || record.servicePk || record.pk || "").trim(),
+        hostGatewayPk: String(record.hostGatewayPk || record.gatewayPk || gatewayPk).trim(),
+        service: String(record.service || "nvr").trim(),
+        role: String(record.role || record.service || "nvr").trim(),
+        deviceKind: String(record.deviceKind || "service").trim(),
+      });
+    }
+  }
+  return out;
+}
+
+function localHostedServiceRecordsFrom(records: Record<string, unknown>[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const source of records) {
+    const gatewayPk = String(source.devicePk || source.pk || source.gatewayPk || "").trim();
+    const hosted = Array.isArray(source.hostedServices || source.hosted_services)
+      ? source.hostedServices || source.hosted_services
+      : [];
+    for (const service of hosted) {
+      if (!service || typeof service !== "object" || Array.isArray(service)) continue;
+      const record = service as Record<string, unknown>;
+      const servicePk = String(record.devicePk || record.device_pk || record.servicePk || record.service_pk || record.pk || "").trim();
+      if (!servicePk) continue;
+      out.push({
+        ...record,
+        devicePk: servicePk,
+        pk: servicePk,
+        hostGatewayPk: String(record.hostGatewayPk || record.host_gateway_pk || gatewayPk).trim(),
+        service: String(record.service || record.slug || record.name || "nvr").trim(),
+        role: String(record.role || record.service || record.slug || record.name || "nvr").trim(),
+        deviceKind: String(record.deviceKind || record.device_kind || "service").trim(),
+      });
+    }
+  }
+  return out;
+}
+
+function localGatewayExtraZoneScope(gatewayPk: string): RuntimeZoneScope | null {
+  const value = parseLocalJson(window.localStorage.getItem(ACCOUNT_GATEWAY_EXTRA_ZONES_KEY));
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const zones = (value as Record<string, unknown>)[gatewayPk];
+  const zoneId = Array.isArray(zones) ? String(zones[0] || "").trim() : "";
+  return isRoutableRuntimeZoneId(zoneId) ? { zoneId, privacy: "rawIds", ttl: 30, maxHops: 2 } : null;
+}
+
+function endpointHost(value: unknown): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    const host = String(parsed.hostname || "").trim();
+    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  } catch {}
+  const withoutScheme = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  const hostPort = withoutScheme.split("/")[0] || "";
+  if (hostPort.startsWith("[")) {
+    const close = hostPort.indexOf("]");
+    return close >= 0 ? hostPort.slice(0, close + 1) : "";
+  }
+  return hostPort.split(":")[0] || "";
+}
+
+function edgeEndpointFromGatewayEndpoint(value: unknown): string {
+  const host = endpointHost(value);
+  if (!host) return "";
+  return `ws://${host}:7448`;
+}
+
+function derivedGatewayEdgeEndpoint(record: Record<string, unknown>): string {
+  for (const value of Array.isArray(record.relays) ? record.relays : []) {
+    const endpoint = edgeEndpointFromGatewayEndpoint(value);
+    if (endpoint) return endpoint;
+  }
+  for (const key of ["swarmEndpoint", "swarm_endpoint", "swarm", "meshEndpoint", "mesh_endpoint"]) {
+    const endpoint = edgeEndpointFromGatewayEndpoint(record[key]);
+    if (endpoint) return endpoint;
+  }
+  return "";
+}
+
+function localGatewayEdgeEndpoint(gatewayPk: string): string {
+  const target = String(gatewayPk || "").trim();
+  if (!target) return "";
+  const records = [...localStorageRecordList(ACCOUNT_DEVICE_CACHE_KEY), ...localGatewayHostedSnapshots()];
+  for (const record of records) {
+    const pk = String(record.devicePk || record.pk || record.gatewayPk || "").trim();
+    if (pk !== target) continue;
+    const edge = record.swarmEdge && typeof record.swarmEdge === "object"
+      ? record.swarmEdge as Record<string, unknown>
+      : {};
+    const endpoint = String(
+      record.swarmEdgeEndpoint
+      || record.swarm_edge_endpoint
+      || record.edgeStreamEndpoint
+      || record.edge_stream_endpoint
+      || edge.endpoint
+      || "",
+    ).trim() || derivedGatewayEdgeEndpoint(record);
+    if (endpoint) return endpoint;
+  }
+  return "";
+}
+
+function localAccountIdentity(): Record<string, unknown> | null {
+  const identities = localStorageRecordList(ACCOUNT_IDENTITY_CACHE_KEY);
+  return identities.find((entry) => String(entry.identityId || entry.id || "").trim()) || null;
+}
+
+function localBrowserDevicePk(identity: Record<string, unknown> | null, deviceRecords: Record<string, unknown>[]): string {
+  const browserRecord = deviceRecords.find((entry) => {
+    const role = normalizeRole(entry.role || entry.deviceKind || "");
+    const service = normalizeRole(entry.service || "");
+    return role === "browser" && !service && String(entry.devicePk || entry.pk || "").trim();
+  });
+  const identityDevicePks = Array.isArray(identity?.devicePks)
+    ? identity?.devicePks
+    : Array.isArray(identity?.devices)
+      ? (identity?.devices as Array<Record<string, unknown>>).map((entry) => entry?.pk || entry?.devicePk)
+      : [];
+  return String(
+    browserRecord?.devicePk
+    || browserRecord?.pk
+    || identityDevicePks.find((value) => String(value || "").trim())
+    || "",
+  ).trim();
+}
+
+function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): RuntimeServiceContext | null {
+  const identity = localAccountIdentity();
+  const identityId = String(identity?.identityId || identity?.id || "").trim();
+  if (!identityId) return null;
+  const deviceRecords = localStorageRecordList(ACCOUNT_DEVICE_CACHE_KEY);
+  const candidates = [...deviceRecords, ...localHostedServiceRecordsFrom(deviceRecords), ...localGatewayHostedSnapshots()]
+    .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
+    .sort((left, right) => {
+      const sourceDelta = nvrRecordPreparedSourceCount(right) - nvrRecordPreparedSourceCount(left);
+      return sourceDelta || applianceUpdatedAt(right) - applianceUpdatedAt(left);
+    });
+  if (candidates.length === 0) return null;
+  let record = candidates[0] as ManagedApplianceRecord;
+  for (const candidate of candidates.slice(1)) {
+    record = mergeNvrDirectoryRecords(record, candidate as ManagedApplianceRecord);
+  }
+  const gatewayPk = applianceGatewayPk(record);
+  const browserDevicePk = localBrowserDevicePk(identity, deviceRecords);
+  const zoneScope = runtimeZoneScopeFromRecord(record, snapshot, gatewayPk) || localGatewayExtraZoneScope(gatewayPk);
+  return {
+    contextId: parseRuntimeContextId() || randomOpaqueId("nvr-context"),
+    app: "nvr",
+    repo: "constitute-nvr-ui",
+    identityId,
+    devicePk: browserDevicePk,
+    gatewayPk,
+    servicePk: applianceDevicePk(record),
+    service: "nvr",
+    ...(zoneScope ? { zoneScope } : {}),
+    display: nvrDisplayFromRecord(record),
+    createdAt: Date.now(),
+    expiresAt: Date.now() + (10 * 60_000),
+  };
+}
+
 async function waitForDirectEntryNvrServiceRecord(): Promise<{
   snapshot: RuntimeSnapshot | null;
   record: ManagedApplianceRecord | null;
@@ -1161,6 +1697,7 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
   let snapshot = await currentRuntimeSnapshot();
   let record = directEntryNvrServiceRecord(snapshot);
   if (record) return { snapshot, record };
+  if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
 
   const deadline = Date.now() + DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS;
   let identityResolvedAt = 0;
@@ -1168,10 +1705,11 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
     snapshot = await currentRuntimeSnapshot();
     record = directEntryNvrServiceRecord(snapshot);
     if (record) return { snapshot, record };
+    if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
     if (accountRuntimeIdentityResolved(snapshot)) {
       identityResolvedAt ||= Date.now();
       if (Date.now() - identityResolvedAt >= DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS) {
-        return { snapshot, record: null };
+        setDrawerStatus("Waiting for Security Cameras service from the account runtime.");
       }
     }
     await delay(DIRECT_ENTRY_ACCOUNT_HYDRATION_POLL_MS);
@@ -1180,305 +1718,921 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
   return { snapshot, record: null };
 }
 
-async function requestDirectEntryServiceAccessContext(): Promise<ServiceAccessContext> {
-  directEntryServiceAccessAttempted = true;
+function runtimeIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<string, unknown> {
+  const shell = snapshot?.shell && typeof snapshot.shell === "object"
+    ? snapshot.shell as Record<string, unknown>
+    : {};
+  return shell.identity && typeof shell.identity === "object"
+    ? shell.identity as Record<string, unknown>
+    : {};
+}
+
+function normalizeRuntimeZoneScope(value: unknown): RuntimeZoneScope | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const zoneId = String(source.zoneId || source.zone_id || source.key || source.zone || "").trim();
+  if (!isRoutableRuntimeZoneId(zoneId)) return null;
+  const out: RuntimeZoneScope = { zoneId };
+  const privacy = String(source.privacy || "").trim();
+  if (privacy) out.privacy = privacy;
+  const ttl = Number(source.ttl);
+  if (Number.isFinite(ttl) && ttl > 0) out.ttl = ttl;
+  const maxHops = Number(source.maxHops ?? source.max_hops);
+  if (Number.isFinite(maxHops) && maxHops >= 0) out.maxHops = maxHops;
+  return out;
+}
+
+function isRoutableRuntimeZoneId(zoneId: string): boolean {
+  const id = String(zoneId || "").trim();
+  return Boolean(id) && !id.startsWith("identity:") && id !== "runtime.local" && id !== "local";
+}
+
+function firstZoneScopeFromList(value: unknown): RuntimeZoneScope | null {
+  if (!Array.isArray(value)) return null;
+  for (const entry of value) {
+    const scope = normalizeRuntimeZoneScope(entry);
+    if (scope) return scope;
+    if (typeof entry === "string" && isRoutableRuntimeZoneId(entry)) return { zoneId: entry.trim() };
+  }
+  return null;
+}
+
+function zoneScopeFromRecord(record: Record<string, unknown> | null | undefined): RuntimeZoneScope | null {
+  if (!record) return null;
+  const facts = record.facts && typeof record.facts === "object" && !Array.isArray(record.facts)
+    ? record.facts as Record<string, unknown>
+    : {};
+  const health = record.health && typeof record.health === "object" && !Array.isArray(record.health)
+    ? record.health as Record<string, unknown>
+    : {};
+  return normalizeRuntimeZoneScope(record.zoneScope || record.zone_scope)
+    || normalizeRuntimeZoneScope(facts.zoneScope || facts.zone_scope)
+    || normalizeRuntimeZoneScope(health.zoneScope || health.zone_scope)
+    || normalizeRuntimeZoneScope({
+      zoneId: record.zoneId || record.zone_id || record.zoneKey || record.zone_key || record.zone,
+      privacy: record.zonePrivacy || record.zone_privacy,
+    })
+    || normalizeRuntimeZoneScope({
+      zoneId: facts.zoneId || facts.zone_id || facts.zoneKey || facts.zone_key || facts.zone,
+      privacy: facts.zonePrivacy || facts.zone_privacy,
+    })
+    || firstZoneScopeFromList(record.zones)
+    || firstZoneScopeFromList(facts.zones)
+    || firstZoneScopeFromList(health.zones);
+}
+
+function runtimeGatewayRecord(snapshot: RuntimeSnapshot | null, gatewayPk: string): Record<string, unknown> | null {
+  const target = String(gatewayPk || "").trim();
+  if (!target) return null;
+  const groups = [
+    snapshot?.managedAppliances?.owned,
+    snapshot?.managedAppliances?.granted,
+    snapshot?.managedAppliances?.discoverable,
+  ];
+  for (const group of groups) {
+    for (const record of Array.isArray(group) ? group : []) {
+      const pk = String(record?.devicePk || record?.device_pk || record?.pk || "").trim();
+      if (pk === target) return record;
+    }
+  }
+  return null;
+}
+
+function runtimeZoneScopeFromSnapshot(snapshot: RuntimeSnapshot | null): RuntimeZoneScope | null {
+  const edge = snapshot?.edge && typeof snapshot.edge === "object" && !Array.isArray(snapshot.edge)
+    ? snapshot.edge as Record<string, unknown>
+    : {};
+  const shell = snapshot?.shell && typeof snapshot.shell === "object" && !Array.isArray(snapshot.shell)
+    ? snapshot.shell as Record<string, unknown>
+    : {};
+  const zones = shell.zones && typeof shell.zones === "object" && !Array.isArray(shell.zones)
+    ? shell.zones as Record<string, unknown>
+    : {};
+  return normalizeRuntimeZoneScope(edge.zoneScope || edge.zone_scope)
+    || normalizeRuntimeZoneScope({
+      zoneId: zones.activeZoneKey || zones.active_zone_key,
+      privacy: "rawIds",
+    })
+    || firstZoneScopeFromList(zones.joined)
+    || firstZoneScopeFromList(zones.zoneKeys || zones.zone_keys);
+}
+
+function runtimeZoneScopeFromRecord(
+  record: ManagedApplianceRecord,
+  snapshot: RuntimeSnapshot | null,
+  gatewayPk: string,
+): RuntimeZoneScope | null {
+  return zoneScopeFromRecord(record)
+    || zoneScopeFromRecord(runtimeGatewayRecord(snapshot, gatewayPk))
+    || runtimeZoneScopeFromSnapshot(snapshot);
+}
+
+function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: RuntimeSnapshot | null): RuntimeServiceContext {
+  const servicePk = applianceDevicePk(record);
+  const gatewayPk = applianceGatewayPk(record);
+  const identity = runtimeIdentityFromSnapshot(snapshot);
+  const contextId = parseRuntimeContextId() || randomOpaqueId("nvr-context");
+  const browserDevicePk = String(identity.devicePk || identity.device_pk || identity.browserDevicePk || "").trim();
+  const zoneScope = runtimeZoneScopeFromRecord(record, snapshot, gatewayPk);
+  return {
+    contextId,
+    app: "nvr",
+    repo: "constitute-nvr-ui",
+    identityId: String(identity.identityId || "").trim(),
+    devicePk: browserDevicePk,
+    gatewayPk,
+    servicePk,
+    service: "nvr",
+    ...(zoneScope ? { zoneScope } : {}),
+    display: nvrDisplayFromRecord(record),
+    createdAt: Date.now(),
+    expiresAt: Date.now() + (10 * 60_000),
+  };
+}
+
+async function requestDirectEntryRuntimeContext(): Promise<RuntimeServiceContext> {
   setConnectionState("opening", "warn");
   setDrawerStatus("Opening Security Cameras through your account runtime.");
-  setGridEmpty("Opening Security Cameras", "Resolving an account-authorized camera session through the gateway.");
+  setGridEmpty("Opening Security Cameras", "Resolving account-authorized camera projections.");
   dismissBootSplash();
-  void reportServiceStatus("opening", "Resolving an account-authorized camera session.", "service_access_authorization");
+  void reportServiceStatus("opening", "Resolving account-authorized camera projections.", "runtime_directory");
 
   const { snapshot, record } = await waitForDirectEntryNvrServiceRecord();
   if (!record) {
+    const cachedContext = localCachedNvrRuntimeContext(snapshot);
+    if (cachedContext) {
+      appendLog("runtime context loaded from retained account cache while account worker repairs");
+      scheduleDirectEntryRuntimeRepair("account runtime unavailable; retained Security Cameras cache used");
+      return cachedContext;
+    }
     if (accountRuntimeNeedsIdentity(snapshot)) {
-      throw serviceAccessError(
-        "service_access_context",
+      throw runtimeContextError(
+        "runtime_context",
         "link an identity before opening Security Cameras",
       );
     }
-    throw serviceAccessError(
-      "service_access_context",
+    throw runtimeContextError(
+      "runtime_context",
       "no Security Cameras service is available from this account runtime",
     );
   }
 
-  let selectedRecord = record;
-  let selectedSnapshot = snapshot;
-  let result: Record<string, unknown> | null = null;
-  let attempt = 0;
-  while (!result) {
-    attempt += 1;
-    try {
-      result = await runtimeBrokerCall<Record<string, unknown>>(BROKER.SERVICE_ACCESS_REQUEST, {
-        payload: {
-          record: selectedRecord,
-          options: {
-            service: "nvr",
-            capability: "nvr.view",
-          },
-        },
-      }, DIRECT_ENTRY_SERVICE_ACCESS_REQUEST_TIMEOUT_MS, "direct service access");
-    } catch (error) {
-      const message = String((error as Error)?.message || error || "Security Cameras service access failed");
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes("link an identity") || lowerMessage.includes("identity is not linked")) {
-        throw serviceAccessError("service_access_context", "link an identity before opening Security Cameras");
-      }
-      appendLog(`direct service access attempt ${attempt} deferred: ${message}`);
-      setConnectionState("opening", "warn");
-      setDrawerStatus("Security Cameras service access is still resolving through the gateway.");
-      setGridEmpty("Opening Security Cameras", "Resolving an account-authorized camera session through the gateway.");
-      void reportServiceStatus("opening", message, "service_access_authorization");
-
-      const refreshedSnapshot = await currentRuntimeSnapshot().catch(() => null);
-      const refreshedRecord = directEntryNvrServiceRecord(refreshedSnapshot);
-      if (refreshedRecord) {
-        selectedRecord = refreshedRecord;
-        selectedSnapshot = refreshedSnapshot;
-      }
-      const retryDelayMs = Math.min(
-        DIRECT_ENTRY_SERVICE_ACCESS_RETRY_MAX_MS,
-        DIRECT_ENTRY_SERVICE_ACCESS_RETRY_BASE_MS * Math.max(1, attempt),
-      );
-      await delay(retryDelayMs);
-    }
-  }
-  const access = normalizeGatewayServiceAccessResult(result);
-  if (!access.serviceCapability) {
-    throw serviceAccessError("service_access_authorization", "Security Cameras service access returned no service capability");
-  }
-
-  const servicePk = String(access.servicePk || applianceDevicePk(record)).trim();
-  const gatewayPk = String(access.gatewayPk || applianceGatewayPk(record)).trim();
+  const servicePk = applianceDevicePk(record);
+  const gatewayPk = applianceGatewayPk(record);
   if (!servicePk || !gatewayPk) {
-    throw serviceAccessError("service_access_authorization", "Security Cameras service access did not include service and gateway identity");
+    throw runtimeContextError("runtime_directory", "Security Cameras runtime record did not include service and gateway identity");
   }
-
-  const identity = selectedSnapshot?.shell && typeof selectedSnapshot.shell === "object"
-    ? selectedSnapshot.shell.identity as Record<string, unknown> | undefined
-    : undefined;
-  return {
-    contextId: randomOpaqueId("service-access"),
-    app: "nvr",
-    repo: "constitute-nvr-ui",
-    identityId: String(identity?.identityId || "").trim(),
-    devicePk: servicePk,
-    gatewayPk,
-    servicePk,
-    service: access.service || "nvr",
-    serviceCapability: access.serviceCapability,
-    display: access.display ?? {},
-    createdAt: Date.now(),
-    expiresAt: Number(access.expiresAt || (Date.now() + (2 * 60_000))),
-  };
+  return contextFromRuntimeRecord(record, snapshot);
 }
 
-function normalizeGatewayServiceAccessResult(result: unknown, fallbackRequestId = ""): GatewayServiceAccessResult {
-  const payload = (result && typeof result === "object")
-    ? result as Record<string, unknown>
-    : {};
-  return {
-    requestId: String(payload.requestId || fallbackRequestId).trim(),
-    gatewayPk: String(payload.gatewayPk || "").trim(),
-    servicePk: String(payload.servicePk || "").trim(),
-    service: String(payload.service || "nvr").trim() || "nvr",
-    capability: String(payload.capability || "").trim(),
-    serviceCapability: String(payload.serviceCapability || "").trim(),
-    display: payload.display && typeof payload.display === "object"
-      ? payload.display as ServiceAccessDisplay
-      : undefined,
-    expiresAt: Number(payload.expiresAt || 0),
-    ts: Number(payload.ts || Date.now()),
-  };
-}
-
-function serviceAccessContextNeedsRefresh(context: ServiceAccessContext | null, skewMs = SERVICE_ACCESS_REFRESH_SKEW_MS): boolean {
-  if (!context) return true;
-  const expiresAt = Number(context.expiresAt || 0);
-  if (!expiresAt) return true;
-  return expiresAt <= (Date.now() + Math.max(0, skewMs));
-}
-
-function serviceAccessRefreshRecord(context: ServiceAccessContext): Record<string, string> {
-  return {
-    devicePk: context.servicePk,
-    pk: context.servicePk,
-    hostGatewayPk: context.gatewayPk,
-    service: context.service || "nvr",
-  };
-}
-
-function serviceAccessRefreshOptions(context: ServiceAccessContext): Record<string, string> {
-  const service = String(context.service || "nvr").trim() || "nvr";
-  return {
-    service,
-    capability: `${service}.view`,
-  };
-}
-
-async function persistServiceAccessContext(context: ServiceAccessContext): Promise<ServiceAccessContext> {
-  serviceAccessContext = context;
+async function persistRuntimeServiceContext(context: RuntimeServiceContext): Promise<RuntimeServiceContext> {
+  runtimeServiceContext = context;
   refreshSummary(context);
-  await runtimeCall(BROKER.SERVICE_ACCESS_CONTEXT_PUT, { context }, RUNTIME_WRITE_TIMEOUT_MS);
   return context;
 }
 
-function isExpiredServiceCapabilityError(error: unknown): boolean {
-  const message = String((error as Error)?.message || error || "").toLowerCase();
-  return message.includes("service capability expired") || message.includes("invalid_service_capability");
+function runtimeZoneScope(): RuntimeZoneScope {
+  const runtimeScope = runtimeZoneScopeFromSnapshot(runtimeSnapshot) || runtimeServiceContext?.zoneScope || null;
+  if (runtimeScope?.zoneId) {
+    const ttl = Number(runtimeScope.ttl);
+    const maxHops = Number(runtimeScope.maxHops);
+    return {
+      zoneId: runtimeScope.zoneId,
+      privacy: runtimeScope.privacy || "rawIds",
+      ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : 30,
+      maxHops: Number.isFinite(maxHops) && maxHops > 0 ? maxHops : 2,
+    };
+  }
+  throw new Error("runtime swarm edge zone is unavailable");
 }
 
-async function requestGatewayServiceAccess(): Promise<GatewayServiceAccessResult> {
-  if (!serviceAccessContext) throw new Error("service access context is not loaded");
-  const result = await runtimeBrokerCall<Record<string, unknown>>(BROKER.SERVICE_ACCESS_REQUEST, {
-    payload: {
-      record: serviceAccessRefreshRecord(serviceAccessContext),
-      options: serviceAccessRefreshOptions(serviceAccessContext),
-    },
-  }, SERVICE_ACCESS_REFRESH_TIMEOUT_MS, "service access refresh");
-  appendLog("runtime broker delivered service access refresh");
-  return normalizeGatewayServiceAccessResult(result);
+function runtimeGrantedScope(): GrantedScope {
+  return runtimeServiceContext?.display?.grantedScope || {};
 }
 
-async function ensureFreshServiceAccessContext(force = false, reason = ""): Promise<ServiceAccessContext> {
-  if (!serviceAccessContext) throw new Error("service access context is not loaded");
-  if (!force && !serviceAccessContextNeedsRefresh(serviceAccessContext)) {
-    return serviceAccessContext;
-  }
-  if (serviceAccessRefreshPromise) {
-    return await serviceAccessRefreshPromise;
-  }
+function baseRuntimeAuthorityPayload(): Record<string, unknown> {
+  return runtimeAuthorityPayloadFromContext(runtimeServiceContext || {});
+}
 
-  const current = serviceAccessContext;
-  serviceAccessRefreshPromise = (async () => {
-    const cause = String(reason || "").trim();
-    appendLog(`refreshing managed service access context${cause ? ` (${cause})` : ""}`);
-    const refreshed = await requestGatewayServiceAccess();
-    if (!refreshed.serviceCapability) {
-      throw new Error("service access refresh returned no service capability");
+async function ensureRuntimeSwarmEdgeForContext(context: RuntimeServiceContext): Promise<boolean> {
+  const edgeEndpoint = localGatewayEdgeEndpoint(context.gatewayPk);
+  const rawZoneScope = context.zoneScope || localGatewayExtraZoneScope(context.gatewayPk);
+  if (!edgeEndpoint || !rawZoneScope?.zoneId) return false;
+  const zoneScope: RuntimeZoneScope = {
+    zoneId: rawZoneScope.zoneId,
+    privacy: rawZoneScope.privacy || "rawIds",
+    ttl: Number.isFinite(Number(rawZoneScope.ttl)) && Number(rawZoneScope.ttl) > 0 ? Number(rawZoneScope.ttl) : 30,
+    maxHops: Number.isFinite(Number(rawZoneScope.maxHops)) && Number(rawZoneScope.maxHops) > 0 ? Number(rawZoneScope.maxHops) : 2,
+  };
+  const target = [
+    edgeEndpoint,
+    "runtime-authority",
+    zoneScope.zoneId,
+    zoneScope.privacy || "",
+    String(zoneScope.ttl || ""),
+    String(zoneScope.maxHops || ""),
+  ].join("|");
+  if (runtimeEdgeAttachRepairInFlight && runtimeEdgeAttachRepairInFlightTarget === target) {
+    return await runtimeEdgeAttachRepairInFlight;
+  }
+  runtimeEdgeAttachRepairInFlightTarget = target;
+  runtimeEdgeAttachRepairInFlight = (async () => {
+    const now = Date.now();
+    if (runtimeEdgeAttachRepairTarget !== target) {
+      runtimeEdgeAttachRepairTarget = target;
+      runtimeEdgeAttachRepairFailureCount = 0;
+      runtimeEdgeAttachRepairBackoffUntil = 0;
+    } else if (
+      runtimeEdgeAttachRepairBackoffUntil > now
+      || now - runtimeEdgeAttachRepairAttemptedAt < RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS
+    ) {
+      return false;
     }
-    const next = await persistServiceAccessContext({
-      ...current,
-      gatewayPk: refreshed.gatewayPk || current.gatewayPk,
-      servicePk: refreshed.servicePk || current.servicePk,
-      service: refreshed.service || current.service,
-      serviceCapability: refreshed.serviceCapability,
-      display: refreshed.display ?? current.display,
-      createdAt: Date.now(),
-      expiresAt: Number(refreshed.expiresAt || (Date.now() + (2 * 60_000))),
-    });
-    appendLog(`service access context refreshed until ${new Date(next.expiresAt).toLocaleTimeString()}`);
-    return next;
-  })();
-
-  try {
-    return await serviceAccessRefreshPromise;
-  } finally {
-    serviceAccessRefreshPromise = null;
-  }
-}
-
-async function requestGatewaySignalOnce(
-  signalType: string,
-  payload: unknown,
-  timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
-): Promise<GatewaySignalResult> {
-  if (!serviceAccessContext) throw new Error("service access context is not loaded");
-  const requestId = randomOpaqueId("nvr-signal");
-  const runtimeResult = await runtimeBrokerCall<GatewaySignalResult>(BROKER.SERVICE_SIGNAL_REQUEST, {
-    payload: {
-      requestId,
-      gatewayPk: serviceAccessContext.gatewayPk,
-      servicePk: serviceAccessContext.servicePk,
-      service: serviceAccessContext.service || "nvr",
-      serviceCapability: serviceAccessContext.serviceCapability,
-      signalType,
-      payload,
-    },
-  }, timeoutMs, signalType);
-  appendLog(`runtime broker delivered ${signalType} response`);
-  return runtimeResult;
-}
-
-async function requestGatewaySignal(
-  signalType: string,
-  payload: unknown,
-  timeoutMs = SIGNAL_REQUEST_TIMEOUT_MS,
-): Promise<GatewaySignalResult> {
-  if (!serviceAccessContext) throw new Error("service access context is not loaded");
-  await ensureFreshServiceAccessContext(false, `${signalType} preflight`);
-  try {
-    return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
-  } catch (error) {
-    if (!isExpiredServiceCapabilityError(error)) {
+    runtimeEdgeAttachRepairAttemptedAt = now;
+    try {
+      await runtimeCall("swarm.edge.attach", {
+        payload: {
+          swarmEdgeEndpoint: edgeEndpoint,
+          zoneScope,
+        },
+      }, RUNTIME_WRITE_TIMEOUT_MS);
+      runtimeEdgeAttachRepairFailureCount = 0;
+      runtimeEdgeAttachRepairBackoffUntil = 0;
+      appendLog(`runtime swarm edge attach requested for ${edgeEndpoint}`);
+      return true;
+    } catch (error) {
+      runtimeEdgeAttachRepairFailureCount += 1;
+      runtimeEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
+        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS,
+        RUNTIME_SWARM_EDGE_ATTACH_REPAIR_RETRY_MS * runtimeEdgeAttachRepairFailureCount,
+      );
       throw error;
     }
-    appendLog(`service capability expired during ${signalType}; refreshing and retrying`);
-    await ensureFreshServiceAccessContext(true, `${signalType} retry`);
-    return await requestGatewaySignalOnce(signalType, payload, timeoutMs);
-  }
-}
-
-async function requestGatewayGrantAction(
-  action: string,
-  payload: Record<string, unknown> = {},
-): Promise<GatewayGrantResult> {
-  if (!serviceAccessContext) throw new Error("service access context is not loaded");
-  const requestId = randomOpaqueId("nvr-grant");
-  return await runtimeBrokerCall<GatewayGrantResult>("gateway.grant.request", {
-    payload: {
-      requestId,
-      gatewayPk: serviceAccessContext.gatewayPk,
-      servicePk: serviceAccessContext.servicePk,
-      service: serviceAccessContext.service || "nvr",
-      action,
-      ...payload,
-    },
-  }, GRANT_REQUEST_TIMEOUT_MS, action);
-}
-
-function unwrapGatewaySignalPayload(result: GatewaySignalResult): Record<string, unknown> {
-  const root = result.result && typeof result.result === "object"
-    ? result.result as Record<string, unknown>
-    : {};
-  const payload = root.payload && typeof root.payload === "object"
-    ? root.payload as Record<string, unknown>
-    : root;
-  return payload;
-}
-
-async function requestAdminAction(
-  action: string,
-  payload: Record<string, unknown> = {},
-): Promise<Record<string, unknown>> {
-  const timeoutMs = action === "apply_camera_device_config"
-    ? CAMERA_APPLY_REQUEST_TIMEOUT_MS
-    : ADMIN_SIGNAL_REQUEST_TIMEOUT_MS;
+  })();
   try {
-    const result = await requestGatewaySignal("admin", {
-      action,
-      payload,
-    }, timeoutMs);
-    return unwrapGatewaySignalPayload(result);
-  } catch (error) {
-    throw new Error(normalizeAdminError(error));
+    return await runtimeEdgeAttachRepairInFlight;
+  } finally {
+    if (runtimeEdgeAttachRepairInFlightTarget === target) {
+      runtimeEdgeAttachRepairInFlight = null;
+      runtimeEdgeAttachRepairInFlightTarget = "";
+    }
   }
 }
 
-function normalizeSourceIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  for (const entry of value) {
-    const next = String(entry || "").trim();
-    if (next && !out.includes(next)) out.push(next);
-  }
-  return out;
+async function queueRuntimeAppIntent({
+  method,
+  intent,
+  timeoutMs,
+}: {
+  method: string;
+  intent: Record<string, unknown>;
+  timeoutMs: number;
+}): Promise<RuntimeIntentResult> {
+  const payload = {
+    ...baseRuntimeAuthorityPayload(),
+    ...intent,
+  };
+  const result = await runtimeCall<RuntimeIntentResult>(method, { payload }, timeoutMs);
+  appendLog(`queued ${method} runtime intent ${runtimeIntentFrameId(result).slice(0, 12)}`);
+  return result;
 }
+
+function registerRuntimeStreamSessionKey(session: RuntimeStreamSession, value: unknown): void {
+  const key = String(value || "").trim();
+  if (!key) return;
+  session.correlationKeys.add(key);
+  runtimeStreamSessionsByCorrelationKey.set(key, session);
+}
+
+function registerRuntimeStreamSessionKeys(session: RuntimeStreamSession, keys: Iterable<unknown>): void {
+  for (const key of keys) registerRuntimeStreamSessionKey(session, key);
+}
+
+function registerRuntimeStreamSession(session: RuntimeStreamSession): void {
+  runtimeStreamSessionsBySessionId.set(session.sessionId, session);
+  registerRuntimeStreamSessionKey(session, session.sessionId);
+  if (session.frameId) {
+    runtimeStreamSessionsByFrameId.set(session.frameId, session);
+    registerRuntimeStreamSessionKey(session, session.frameId);
+  }
+  registerRuntimeStreamSessionKeys(session, session.correlationKeys);
+}
+
+function unregisterRuntimeStreamSession(session: RuntimeStreamSession): void {
+  runtimeStreamSessionsBySessionId.delete(session.sessionId);
+  if (session.frameId) runtimeStreamSessionsByFrameId.delete(session.frameId);
+  for (const key of session.correlationKeys) {
+    runtimeStreamSessionsByCorrelationKey.delete(key);
+  }
+  session.correlationKeys.clear();
+}
+
+function reportMediaTransportObservation(observation: MediaTransportObservation): void {
+  void runtimeCall(RUNTIME_MEDIA_TRANSPORT_OBSERVATION_PUT, { payload: observation }, RUNTIME_WRITE_TIMEOUT_MS).catch((error) => {
+    appendLog(`media transport observation report failed: ${String((error as Error)?.message || error)}`);
+  });
+}
+
+function reportMediaFulfillmentEvidence(evidence: MediaFulfillmentEvidence): void {
+  const sessionId = String(evidence.sessionId || "").trim();
+  const session = sessionId ? runtimeStreamSessionsBySessionId.get(sessionId) : null;
+  if (session) {
+    try {
+      const observation = mediaTransportObservationFromFulfillmentEvidence(session, evidence);
+      if (observation) reportMediaTransportObservation(observation);
+    } catch (error) {
+      appendLog(`media transport observation build failed: ${String((error as Error)?.message || error)}`);
+    }
+  }
+  void runtimeCall(RUNTIME_MEDIA_FULFILLMENT_EVIDENCE_PUT, { payload: evidence }, RUNTIME_WRITE_TIMEOUT_MS).catch((error) => {
+    appendLog(`media fulfillment evidence report failed: ${String((error as Error)?.message || error)}`);
+  });
+}
+
+function reportMediaFulfillmentEvidenceBatch(evidence: MediaFulfillmentEvidence[]): void {
+  for (const entry of evidence) reportMediaFulfillmentEvidence(entry);
+}
+
+function mediaEvidenceBlockedReason(evidence: MediaFulfillmentEvidence): string {
+  return String((evidence as MediaFulfillmentEvidence & { blockedReason?: string }).blockedReason || "").trim();
+}
+
+function handleRuntimeStreamStaleMedia(session: RuntimeStreamSession, reason: string): void {
+  if (session.adapterFailureNotified) return;
+  session.adapterFailureNotified = true;
+  session.routePending = false;
+  session.routeState = "mediaStalled";
+  const detail = `Live media path stalled: ${reason}.`;
+  appendLog(`stream adapter stalled: ${detail}`);
+  setTileState(session.sourceId, "connecting", "Reconnecting stalled live preview.");
+  setConnectionState("reconnecting", "warn");
+  setDrawerStatus("Live preview stalled. Reconnecting automatically.");
+  void reportServiceStatus("reconnecting", detail, "stream_adapter");
+  cancelStreamLiveWatchdog();
+  scheduleAutomaticReconnect(detail);
+}
+
+function reportBrowserMediaStats(session: RuntimeStreamSession): void {
+  void collectBrowserMediaFulfillmentEvidence(session).then((evidence) => {
+    reportMediaFulfillmentEvidenceBatch(evidence);
+    const stalled = evidence.find((entry) => (
+      entry.evidenceKind === SWARM.MEDIA_FULFILLMENT_EVIDENCE_KIND.INBOUND_STATS
+      && entry.state === SWARM.MEDIA_FULFILLMENT_STATE.BLOCKED
+      && mediaEvidenceBlockedReason(entry) === "inboundRtpStalled"
+    ));
+    if (stalled) handleRuntimeStreamStaleMedia(session, mediaEvidenceBlockedReason(stalled));
+  }).catch(() => {});
+}
+
+function startRuntimeStreamStatsMonitor(session: RuntimeStreamSession): void {
+  if (session.mediaStatsTimer) return;
+  reportBrowserMediaStats(session);
+  session.mediaStatsTimer = window.setInterval(() => {
+    reportBrowserMediaStats(session);
+  }, RUNTIME_STREAM_MEDIA_STATS_POLL_MS);
+}
+
+function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaStreamTrack, session: RuntimeStreamSession): void {
+  const tile = ensureCameraTile(sourceId);
+  tile.video.srcObject = stream as MediaStream;
+  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
+  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
+  startRuntimeStreamStatsMonitor(session);
+  const markLive = () => {
+    reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
+    reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
+    reportBrowserMediaStats(session);
+    cancelStreamLiveWatchdog();
+    reconnectAttemptCount = 0;
+    resetRuntimeStreamRecovery("adapterLive");
+    setTileState(sourceId, "live", "Live preview stream attached.");
+    setConnectionState("live", "good");
+    setDrawerStatus("Live preview connected.");
+  };
+  const markPendingRender = () => {
+    reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
+  };
+  track.addEventListener("mute", () => reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track)));
+  track.addEventListener("ended", () => reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track)), { once: true });
+  track.addEventListener("unmute", markLive, { once: true });
+  tile.video.addEventListener("loadedmetadata", markPendingRender, { once: true });
+  tile.video.addEventListener("resize", markPendingRender);
+  tile.video.addEventListener("playing", markLive, { once: true });
+  if (track.readyState === "live") {
+    markLive();
+  }
+}
+
+function handleRuntimeStreamAdapterState(session: RuntimeStreamSession, state: BrowserStreamAdapterState): void {
+  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromAdapterState(session, state));
+  reportBrowserMediaStats(session);
+  if (!state.failed || session.adapterFailureNotified) return;
+  session.adapterFailureNotified = true;
+  session.routePending = false;
+  session.routeState = "adapterFailed";
+  const detail = `${state.reason} (${state.kind}: ${state.state}; iceServers=${session.selectedIceServerCount}; localCandidates=${session.localCandidateCount}; remoteCandidates=${session.remoteCandidateCount})`;
+  appendLog(`stream adapter failed: ${detail}`);
+  setTileState(session.sourceId, "unavailable", detail);
+  setConnectionState("media failed", "bad");
+  setDrawerStatus(detail);
+  void reportServiceStatus("degraded", detail, "stream_adapter");
+  cancelStreamLiveWatchdog();
+  scheduleAutomaticReconnect(detail);
+}
+
+async function publishRuntimeStreamCandidate({
+  nonce,
+  sessionId,
+  sourceId,
+  candidate,
+}: {
+  nonce: string;
+  sessionId: string;
+  sourceId: string;
+  candidate: RTCIceCandidateInit;
+}): Promise<void> {
+  const issuedAt = Date.now();
+  await queueRuntimeAppIntent({
+    method: RUNTIME_STREAM_CONTROL,
+    intent: {
+      nonce,
+      sessionId,
+      candidateId: `candidate-${sessionId}-${issuedAt}-${randomOpaqueId("ice")}`,
+      transport: "webrtc",
+      sourceId,
+      payload: {
+        direction: "remote",
+        candidate,
+      },
+      issuedAt,
+    },
+    timeoutMs: RUNTIME_WRITE_TIMEOUT_MS,
+  });
+}
+
+async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTIME_STREAM_INTENT_TIMEOUT_MS): Promise<RuntimeIntentResult> {
+  if (!browserStreamAvailable()) {
+    throw new Error("browser stream transport is unavailable in this context");
+  }
+  const mediaTransportProfile = await runtimeMediaTransportProfile();
+  const mediaIceServers = runtimeMediaIceServers(mediaTransportProfile);
+  let lastResult: RuntimeIntentResult = {};
+  for (const sourceId of sourceIds) {
+    const autoPreview = sourceId === NVR_AUTO_PREVIEW_SOURCE_ID;
+    const requestedSourceIds = autoPreview ? [] : [sourceId];
+    const sentInitialCandidateKeys = new Set<string>();
+    let streamOpenQueued = false;
+    const nonce = randomOpaqueId("stream");
+    const expectedSessionId = `nvr-preview-${nonce}`;
+    const offer = await createBrowserStreamOffer({
+      sourceId,
+      sessionId: expectedSessionId,
+      nonce,
+      iceServers: mediaIceServers,
+      onCandidate: (candidate) => {
+        if (!streamOpenQueued) return;
+        if (sentInitialCandidateKeys.has(candidateKey(candidate))) return;
+        void publishRuntimeStreamCandidate({
+          nonce,
+          sessionId: expectedSessionId,
+          sourceId,
+          candidate,
+        }).catch((error) => {
+          appendLog(`queued stream candidate failed: ${String((error as Error)?.message || error)}`);
+        });
+      },
+      onStateChange: (state, activeSession) => handleRuntimeStreamAdapterState(activeSession, state),
+      onTrack: (stream, track, activeSession) => bindRuntimeStreamTrack(sourceId, stream, track, activeSession),
+    });
+    const session = offer.session;
+    const offerCandidates = offer.candidates.slice();
+    const issuedAt = Date.now();
+    const expiresAt = issuedAt + (2 * 60_000);
+    const intentId = randomOpaqueId("stream-intent");
+    session.issuedAt = issuedAt;
+    session.expiresAt = expiresAt;
+    registerRuntimeStreamSessionKeys(session, [
+      expectedSessionId,
+      nonce,
+      intentId,
+      `route:${intentId}`,
+    ]);
+    registerRuntimeStreamSession(session);
+    const record = {
+      sessionId: expectedSessionId,
+      nonce,
+      intentId,
+      nodeRef: "nvr.streams",
+      capabilityRef: SWARM.CORE_CAPABILITY.MEDIA_STREAM_PREVIEW,
+      transport: "webrtc",
+      sourceIds: requestedSourceIds,
+      offer: {
+        description: offer.description,
+        sourceIds: requestedSourceIds,
+        localCandidateCount: offerCandidates.length,
+      },
+      candidates: offerCandidates,
+      mediaTransportProfile: runtimeMediaTransportContract(mediaTransportProfile),
+      iceServers: {
+        stun: runtimeMediaIceServerUrls(mediaTransportProfile, "stun:"),
+        turn: runtimeMediaIceServerUrls(mediaTransportProfile, "turn:"),
+      },
+      issuedAt,
+      expiresAt,
+    };
+    let result: RuntimeIntentResult;
+    try {
+      result = await queueRuntimeAppIntent({
+        method: RUNTIME_STREAM_OPEN,
+        intent: record,
+        timeoutMs,
+      });
+    } catch (error) {
+      unregisterRuntimeStreamSession(session);
+      reportMediaFulfillmentEvidence(mediaFulfillmentReleaseEvidence(session, "streamOpenFailed"));
+      closeBrowserStreamSession(session);
+      throw error;
+    }
+    if (runtimeIntentWaitingAuthority(result)) {
+      unregisterRuntimeStreamSession(session);
+      reportMediaFulfillmentEvidence(mediaFulfillmentReleaseEvidence(session, "waitingAuthority"));
+      closeBrowserStreamSession(session);
+      lastResult = result;
+      break;
+    }
+    session.routePending = runtimeIntentPendingRoute(result);
+    session.routeState = session.routePending ? (runtimeIntentState(result) || "waitingRouteBaseline") : "";
+    if (session.routePending) {
+      markRouteBaselineWaiting();
+      noteRouteBaselinePending("stream route baseline pending after activation");
+    }
+    for (const candidate of offerCandidates) {
+      sentInitialCandidateKeys.add(candidateKey(candidate));
+    }
+    streamOpenQueued = true;
+    for (const candidate of offer.candidates) {
+      if (sentInitialCandidateKeys.has(candidateKey(candidate))) continue;
+      void publishRuntimeStreamCandidate({
+        nonce,
+        sessionId: expectedSessionId,
+        sourceId,
+        candidate,
+      }).catch((error) => {
+        appendLog(`queued stream candidate failed: ${String((error as Error)?.message || error)}`);
+      });
+    }
+    const frameId = runtimeIntentFrameId(result);
+    session.frameId = frameId;
+    if (frameId) runtimeStreamSessionsByFrameId.set(frameId, session);
+    registerRuntimeStreamSessionKeys(session, collectRuntimeIntentResultKeys(result));
+    lastResult = result;
+  }
+  return lastResult;
+}
+
+async function publishRuntimeStreamControl(command: string, params: Record<string, unknown> = {}): Promise<RuntimeIntentResult> {
+  const record = {
+    controlId: randomOpaqueId("stream-control"),
+    sessionId: String(params.sessionId || "nvr-preview").trim(),
+    command,
+    params: {
+      ...params,
+      sourceIds: normalizeSourceIds(params.sourceIds || []),
+    },
+    issuedAt: Date.now(),
+  };
+  return await queueRuntimeAppIntent({
+    method: command === "close" ? RUNTIME_STREAM_CLOSE : RUNTIME_STREAM_CONTROL,
+    intent: {
+      nodeRef: normalizeSourceIds(params.sourceIds || (params.sourceId ? [params.sourceId] : []))[0] || undefined,
+      capabilityRef: SWARM.CORE_CAPABILITY.MEDIA_STREAM_PREVIEW,
+      ...record,
+    },
+    timeoutMs: RUNTIME_WRITE_TIMEOUT_MS,
+  });
+}
+
+async function publishRuntimeServiceIntent(
+  action: string,
+  payload: Record<string, unknown> = {},
+  timeoutMs = ADMIN_INTENT_TIMEOUT_MS,
+): Promise<RuntimeIntentResult> {
+  const record = {
+    kind: "service.intent",
+    intentId: randomOpaqueId("nvr-intent"),
+    service: "nvr",
+    action,
+    payloadShape: Object.keys(payload).sort(),
+    issuedAt: Date.now(),
+  };
+  return await queueRuntimeAppIntent({
+    method: "runtime.capability.resolve",
+    intent: {
+      nodeRef: "surface",
+      capabilityRef: SWARM.CORE_CAPABILITY.SERVICE_INTENT_INVOKE,
+      ...record,
+    },
+    timeoutMs,
+  });
+}
+
+function projectedCameraInventoryFallback(): CameraInventoryRecord {
+  return {
+    mountedDevices: nvrProjectionState.cameras.length > 0
+      ? nvrProjectionState.cameras
+      : (cameraInventory?.mountedDevices || []),
+    candidateDevices: cameraInventory?.candidateDevices || [],
+    cameraNetwork: nvrProjectionState.cameraNetwork || cameraInventory?.cameraNetwork || {},
+  };
+}
+
+function mountedCameraFallback(sourceId: string, desired: Record<string, unknown>): MountedCameraRecord | null {
+  const key = String(sourceId || "").trim();
+  if (!key) return null;
+  const existing = mountedCameraRecord(key);
+  const displayName = String(desired.displayName || existing?.displayName || existing?.observed?.displayName || cameraDisplayName(key)).trim() || key;
+  return {
+    ...(existing || {}),
+    sourceId: key,
+    displayName,
+    desired: {
+      ...(existing?.desired || {}),
+      displayName,
+      overlayText: String(desired.overlayText || displayName).trim(),
+      overlayTimestamp: desired.overlayTimestamp !== false,
+      hardening: desired.hardening && typeof desired.hardening === "object"
+        ? desired.hardening as Record<string, boolean>
+        : existing?.desired?.hardening,
+    },
+    observed: {
+      ...(existing?.observed || {}),
+      displayName,
+      overlayText: String(desired.overlayText || displayName).trim(),
+      overlayTimestamp: desired.overlayTimestamp !== false,
+    },
+    verification: {
+      status: "pending",
+      message: "Runtime intent queued; projection update pending.",
+    },
+    credentialSafety: {
+      status: "pending",
+      pending: true,
+    },
+  };
+}
+
+function adminProjectionFallback(action: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
+  if (action === "list_camera_device_inventory") {
+    return { inventory: projectedCameraInventoryFallback() };
+  }
+  if (action === "apply_camera_device_config") {
+    const desired = payload.desired && typeof payload.desired === "object"
+      ? payload.desired as Record<string, unknown>
+      : {};
+    return {
+      action,
+      mounted: mountedCameraFallback(String(payload.sourceId || ""), desired),
+    };
+  }
+  if (action === "mount_camera_device") {
+    return {
+      action,
+      mounted: null,
+      accepted: true,
+    };
+  }
+  if (action === "probe_camera_device") {
+    return {
+      action,
+      result: {
+        status: "queued",
+        verification: {
+          status: "pending",
+          message: "Runtime intent queued; projection update pending.",
+        },
+      },
+    };
+  }
+  return { action, accepted: true };
+}
+
+const nvrAdminAdapter = createNvrAdminAdapter({
+  defaultTimeoutMs: ADMIN_INTENT_TIMEOUT_MS,
+  applyCameraDeviceConfigTimeoutMs: CAMERA_APPLY_REQUEST_TIMEOUT_MS,
+  publishRuntimeServiceIntent,
+  projectionFallback: adminProjectionFallback,
+});
+
 
 function normalizeRecords(value: unknown): ManagedApplianceRecord[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is ManagedApplianceRecord => Boolean(entry) && typeof entry === "object")
     : [];
+}
+
+function recordFrom(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function runtimeProjectionRecords(snapshot: RuntimeSnapshot | null): RuntimeProjectionRecord[] {
+  const projections = snapshot?.projections;
+  const values = Array.isArray(projections)
+    ? projections
+    : projections && typeof projections === "object"
+      ? Object.values(projections)
+      : [];
+  return values.filter((entry): entry is RuntimeProjectionRecord => Boolean(entry) && typeof entry === "object");
+}
+
+function projectionPayload(record: RuntimeProjectionRecord | null | undefined): Record<string, unknown> {
+  return record?.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+    ? record.payload
+    : {};
+}
+
+function projectionFields(record: RuntimeProjectionRecord | null | undefined): Record<string, unknown> {
+  const payload = projectionPayload(record);
+  return recordFrom(payload.fields);
+}
+
+function projectionSortValue(record: RuntimeProjectionRecord): number {
+  const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
+  return Number(record.retainedAt || freshness.updatedAt || record.updatedAt || record.issuedAt || 0);
+}
+
+function nvrRuntimeProjectionRecord(channelId: string): RuntimeProjectionRecord | null {
+  const servicePk = String(runtimeServiceContext?.servicePk || "").trim();
+  const records = runtimeProjectionRecords(runtimeSnapshot)
+    .filter((record) => String(record.channelId || "").trim() === channelId)
+    .filter((record) => {
+      const recordService = String(record.service || "").trim().toLowerCase();
+      const recordServicePk = String(record.servicePk || record.service_pk || "").trim();
+      return (!recordService || recordService === "nvr") && (!servicePk || !recordServicePk || recordServicePk === servicePk);
+    })
+    .sort((left, right) => projectionSortValue(right) - projectionSortValue(left));
+  return records[0] || null;
+}
+
+function collectStoragePinIntentsFromProjection(record: RuntimeProjectionRecord | null): Array<Record<string, unknown>> {
+  const payload = projectionPayload(record);
+  const fields = projectionFields(record);
+  const candidates = [
+    payload.storagePinIntent,
+    payload.storagePinIntents,
+    payload.pinIntents,
+    payload.segmentPinIntents,
+    fields.storagePinIntent,
+    fields.storagePinIntents,
+    fields.pinIntents,
+    fields.segmentPinIntents,
+  ];
+  const out: Array<Record<string, unknown>> = [];
+  for (const candidate of candidates) {
+    const entries = Array.isArray(candidate) ? candidate : candidate ? [candidate] : [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const intent = entry as Record<string, unknown>;
+      const intentId = String(intent.intentId || "").trim();
+      if (!intentId || out.some((existing) => String(existing.intentId || "").trim() === intentId)) continue;
+      out.push(intent);
+    }
+  }
+  return out;
+}
+
+function nextNvrProjectionState(): NvrProjectionState {
+  const healthProjection = nvrRuntimeProjectionRecord("nvr.health");
+  const camerasProjection = nvrRuntimeProjectionRecord("nvr.cameras");
+  const cameraNetworkProjection = nvrRuntimeProjectionRecord("nvr.cameraNetwork");
+  const streamsProjection = nvrRuntimeProjectionRecord("nvr.streams");
+
+  const healthPayload = projectionPayload(healthProjection);
+  const healthFields = projectionFields(healthProjection);
+  const health = recordFrom(healthPayload.health);
+  const cameraDevices = projectionPayload(camerasProjection).cameraDevices ?? projectionFields(camerasProjection).cameraDevices;
+  const cameraNetworkPayload = projectionPayload(cameraNetworkProjection);
+  const cameraNetworkFields = projectionFields(cameraNetworkProjection);
+  const cameraNetwork = cameraNetworkProjection
+    ? cameraNetworkPayload.cameraNetwork ?? (Object.keys(cameraNetworkFields).length > 0 ? cameraNetworkFields : null)
+    : null;
+  const streamPayload = projectionPayload(streamsProjection);
+  const streamFields = projectionFields(streamsProjection);
+  const streamSources = normalizeSourceIds(streamPayload.sources ?? streamFields.sources);
+  const streamStatusRecords = Array.isArray(streamPayload.mediaProjectionStatusRecords)
+    ? streamPayload.mediaProjectionStatusRecords.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+
+  const projectionRecords: Record<string, RuntimeProjectionRecord> = {};
+  for (const channelId of NVR_PROJECTION_CHANNELS) {
+    const record = nvrRuntimeProjectionRecord(channelId);
+    if (record) projectionRecords[channelId] = record;
+  }
+
+  return {
+    health: Object.keys(health).length > 0 ? health : Object.keys(healthFields).length > 0 ? healthFields : null,
+    cameras: Array.isArray(cameraDevices)
+      ? cameraDevices.filter((entry): entry is MountedCameraRecord => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+      : [],
+    cameraNetwork: cameraNetwork && typeof cameraNetwork === "object" && !Array.isArray(cameraNetwork)
+      ? cameraNetwork as CameraNetworkSummaryRecord
+      : null,
+    streamSources,
+    streamStatusRecords,
+    storagePinIntents: [
+      ...collectStoragePinIntentsFromProjection(healthProjection),
+      ...collectStoragePinIntentsFromProjection(camerasProjection),
+      ...collectStoragePinIntentsFromProjection(streamsProjection),
+    ],
+    projectionRecords,
+    updatedAt: Math.max(0, ...Object.values(projectionRecords).map(projectionSortValue)),
+  };
+}
+
+function hasNvrRuntimeProjectionState(state = nvrProjectionState): boolean {
+  return Boolean(
+    state.health ||
+    state.cameras.length > 0 ||
+    state.cameraNetwork ||
+    state.streamSources.length > 0 ||
+    state.streamStatusRecords.length > 0 ||
+    state.storagePinIntents.length > 0
+  );
+}
+
+function applyNvrRuntimeProjections(): boolean {
+  const next = nextNvrProjectionState();
+  nvrProjectionState = next;
+  if (!hasNvrRuntimeProjectionState(next)) {
+    renderHistoryProjectionStatus();
+    return false;
+  }
+
+  const projectedSources = next.streamSources.length > 0
+    ? next.streamSources
+    : next.cameras.map((camera) => String(camera.sourceId || "").trim()).filter(Boolean);
+
+  if (runtimeServiceContext) {
+    const display = runtimeServiceContext.display || {};
+    const healthStatus = typeof next.health?.ok === "boolean"
+      ? (next.health.ok ? "online" : "degraded")
+      : String(display.status || "ready");
+    runtimeServiceContext = {
+      ...runtimeServiceContext,
+      display: {
+        ...display,
+        status: healthStatus,
+        configuredSources: Number(next.health?.configuredSources || projectedSources.length || display.configuredSources || 0),
+        cameraCount: Number(projectedSources.length || display.cameraCount || 0),
+        sources: projectedSources.length > 0 ? projectedSources : display.sources,
+        cameras: projectedSources.length > 0
+          ? projectedSources.map((sourceId) => {
+            const existing = runtimeCameraInfoBySourceId.get(sourceId);
+            const mounted = next.cameras.find((camera) => String(camera.sourceId || "").trim() === sourceId);
+            return {
+              sourceId,
+              name: String(mounted?.observed?.displayName || mounted?.displayName || mounted?.desired?.displayName || existing?.name || humanizeSourceId(sourceId)),
+              viewGranted: existing?.viewGranted !== false,
+              controlGranted: existing?.controlGranted === true || viewerIsOwner(),
+              ptzCapable: mounted?.observed?.ptzCapable === true || mounted?.capabilities?.ptz === true || existing?.ptzCapable === true,
+            };
+          })
+          : display.cameras,
+      },
+    };
+    refreshSummary(runtimeServiceContext);
+  }
+
+  if (next.cameras.length > 0 || next.cameraNetwork) {
+    cameraInventory = {
+      mountedDevices: next.cameras.length > 0 ? next.cameras : (cameraInventory?.mountedDevices || []),
+      candidateDevices: cameraInventory?.candidateDevices || [],
+      cameraNetwork: next.cameraNetwork || cameraInventory?.cameraNetwork || {},
+    };
+    cameraInventoryError = "";
+    seedCameraDraftsFromInventory();
+  }
+
+  if (projectedSources.length > 0) {
+    const currentSources = Array.from(cameraTiles.keys());
+    if (cameraTiles.size === 0 || currentSources.join("\n") !== projectedSources.join("\n")) {
+      cameraGridEl.innerHTML = "";
+      cameraTiles.clear();
+      for (const sourceId of projectedSources) ensureCameraTile(sourceId);
+    }
+    for (const sourceId of projectedSources) {
+      updateLiveTileMetadata(sourceId);
+      renderTileStreamStatus(sourceId);
+    }
+  } else {
+    for (const sourceId of cameraTiles.keys()) renderTileStreamStatus(sourceId);
+  }
+
+  renderNvrSettingsSummary();
+  renderCameraList();
+  renderHistoryProjectionStatus();
+  return true;
 }
 
 function normalizeRole(value: unknown): string {
@@ -1558,17 +2712,75 @@ function directEntryNvrRecordFromGateway(gateway: ManagedApplianceRecord): Manag
   };
 }
 
+function nvrRecordPreparedSourceCount(record: ManagedApplianceRecord | null): number {
+  if (!record) return 0;
+  const display = nvrDisplayFromRecord(record);
+  return normalizeSourceIds(display.sources).length || normalizeRuntimeCameraEntries(display).length;
+}
+
+function mergeNvrDirectoryRecords(
+  richerRecord: ManagedApplianceRecord,
+  catalogRecord: ManagedApplianceRecord | null,
+): ManagedApplianceRecord {
+  if (!catalogRecord) return richerRecord;
+  return {
+    ...catalogRecord,
+    ...richerRecord,
+    label: String(catalogRecord.label || catalogRecord.deviceLabel || richerRecord.label || richerRecord.deviceLabel || "Security Cameras"),
+    displayName: String(catalogRecord.displayName || catalogRecord.label || richerRecord.displayName || richerRecord.deviceLabel || "Security Cameras"),
+    hostGatewayPk: String(richerRecord.hostGatewayPk || catalogRecord.hostGatewayPk || catalogRecord.gatewayPk || ""),
+    updatedAt: Math.max(applianceUpdatedAt(catalogRecord), applianceUpdatedAt(richerRecord)),
+  };
+}
+
 function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
+  const catalogRecord = directEntryNvrServiceCatalogRecord(snapshot);
   const records = snapshotManagedApplianceRecords(snapshot);
   const services = records
     .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
     .sort((left, right) => applianceUpdatedAt(right) - applianceUpdatedAt(left));
-  if (services[0]) return services[0];
+  const hostedRecords: ManagedApplianceRecord[] = [];
   for (const gateway of records.filter(isGatewayApplianceRecord)) {
     const hosted = directEntryNvrRecordFromGateway(gateway);
-    if (hosted) return hosted;
+    if (hosted) hostedRecords.push(hosted);
   }
-  return null;
+  const richerRecord = [...services, ...hostedRecords]
+    .sort((left, right) => {
+      const sourceDelta = nvrRecordPreparedSourceCount(right) - nvrRecordPreparedSourceCount(left);
+      return sourceDelta || applianceUpdatedAt(right) - applianceUpdatedAt(left);
+    })[0] || null;
+  if (!richerRecord) return catalogRecord;
+  if (nvrRecordPreparedSourceCount(richerRecord) > nvrRecordPreparedSourceCount(catalogRecord)) {
+    return mergeNvrDirectoryRecords(richerRecord, catalogRecord);
+  }
+  return catalogRecord || richerRecord;
+}
+
+function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
+  const catalog = snapshot?.serviceCatalog && typeof snapshot.serviceCatalog === "object"
+    ? snapshot.serviceCatalog as Record<string, unknown>
+    : null;
+  const services = Array.isArray(catalog?.services) ? catalog.services : [];
+  const match = services.find((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    return normalizeRole((entry as Record<string, unknown>).service) === "nvr";
+  });
+  if (!match || typeof match !== "object") return null;
+  const record = match as Record<string, unknown>;
+  const servicePk = String(record.servicePk || record.devicePk || record.pk || "").trim();
+  const gatewayPk = String(record.hostGatewayPk || record.gatewayPk || "").trim();
+  if (!servicePk || !gatewayPk) return null;
+  return {
+    ...record,
+    devicePk: servicePk,
+    pk: servicePk,
+    hostGatewayPk: gatewayPk,
+    role: "nvr",
+    service: "nvr",
+    deviceKind: "service",
+    serviceVersion: String(record.serviceVersion || record.version || ""),
+    updatedAt: Number(record.updatedAt || snapshot?.updatedAt || Date.now()),
+  };
 }
 
 async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
@@ -1577,15 +2789,6 @@ async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
     absorbRuntimeSnapshot(snapshot);
   } catch {}
   return runtimeSnapshot;
-}
-
-function buildRtcIceServers(hints: IceServerHints | undefined): RTCIceServer[] {
-  const servers: RTCIceServer[] = [];
-  const stun = normalizeSourceIds(hints?.stun || []);
-  if (stun.length > 0) servers.push({ urls: stun });
-  const turn = normalizeSourceIds(hints?.turn || []);
-  if (turn.length > 0) servers.push({ urls: turn });
-  return servers;
 }
 
 function setGridEmpty(title: string, body: string): void {
@@ -1598,42 +2801,16 @@ function setGridEmpty(title: string, body: string): void {
   `;
 }
 
-function normalizeServiceAccessCameraEntries(display: ServiceAccessDisplay): ServiceAccessCameraDisplay[] {
-  const entries = Array.isArray(display?.cameras) ? display.cameras : [];
-  const normalized = entries
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const sourceId = String(entry.sourceId || "").trim();
-      if (!sourceId) return null;
-      return {
-        sourceId,
-        name: String(entry.name || humanizeSourceId(sourceId)).trim() || humanizeSourceId(sourceId),
-        viewGranted: entry.viewGranted !== false,
-        controlGranted: entry.controlGranted === true,
-        ptzCapable: entry.ptzCapable === true,
-      };
-    })
-    .filter((entry): entry is ServiceAccessCameraDisplay => !!entry);
-  if (normalized.length > 0) return normalized;
-  return normalizeSourceIds(display?.sources || []).map((sourceId) => ({
-    sourceId,
-    name: humanizeSourceId(sourceId),
-    viewGranted: true,
-    controlGranted: false,
-    ptzCapable: false,
-  }));
-}
-
 function availableCameraInfo(sourceId: string): CameraGrantView | null {
   const target = String(sourceId || "").trim();
   if (!target || !grantInventory?.availableCameras?.length) return null;
   return grantInventory.availableCameras.find((camera) => String(camera.sourceId || "").trim() === target) || null;
 }
 
-function serviceAccessCameraInfo(sourceId: string): ServiceAccessCameraDisplay | null {
+function runtimeCameraInfo(sourceId: string): RuntimeCameraAccessDisplay | null {
   const key = String(sourceId || "").trim();
   if (!key) return null;
-  const base = serviceAccessCameraInfoBySourceId.get(key) || null;
+  const base = runtimeCameraInfoBySourceId.get(key) || null;
   const available = availableCameraInfo(key);
   const mounted = mountedCameraRecord(key);
   if (!base && !available && !mounted) return null;
@@ -1647,27 +2824,15 @@ function serviceAccessCameraInfo(sourceId: string): ServiceAccessCameraDisplay |
 }
 
 function viewerIsOwner(): boolean {
-  return serviceAccessContext?.display?.grantedScope?.owner === true;
+  return runtimeServiceContext?.display?.grantedScope?.owner === true;
 }
 
 function ownerCanAdmin(): boolean {
   return viewerIsOwner();
 }
 
-function normalizeAdminError(error: unknown): string {
-  const message = String((error as Error)?.message || error || "Camera administration is unavailable.").trim();
-  const lowered = message.toLowerCase();
-  if (lowered.includes("unsupported_signal") || lowered.includes("only offer and session_close are supported")) {
-    return "Gateway update required before camera administration is available from this NVR surface.";
-  }
-  if (lowered.includes("admin_requires_owner")) {
-    return "Owner service access is required before camera administration is available.";
-  }
-  return message || "Camera administration is unavailable.";
-}
-
 function defaultCameraSettingsDraft(sourceId: string): CameraSettingsDraft {
-  const camera = serviceAccessCameraInfo(sourceId);
+  const camera = runtimeCameraInfo(sourceId);
   const displayName = cameraDisplayName(sourceId);
   return {
     displayName,
@@ -1877,14 +3042,35 @@ function settingsCameraRows(): CameraGrantView[] {
   if (grantInventory?.availableCameras?.length) {
     return grantInventory.availableCameras;
   }
-  return normalizeServiceAccessCameraEntries(serviceAccessContext?.display || {}).map((camera) => {
-    const merged = serviceAccessCameraInfo(String(camera.sourceId || "").trim()) || camera;
+  const runtimeRows = normalizeRuntimeCameraEntries(runtimeServiceContext?.display || {}).map((camera) => {
+    const merged = runtimeCameraInfo(String(camera.sourceId || "").trim()) || camera;
     return {
       sourceId: merged.sourceId,
       name: merged.name,
       ptzCapable: merged.ptzCapable,
     };
   });
+  if (runtimeRows.length > 0) return runtimeRows;
+  const liveSourceIds = liveSourceIdsForInventoryDiagnostic();
+  return liveSourceIds.map((sourceId) => ({
+    sourceId,
+    name: cameraDisplayName(sourceId),
+    ptzCapable: false,
+  }));
+}
+
+function liveSourceIdsForInventoryDiagnostic(): string[] {
+  const sources = [
+    ...nvrProjectionState.streamSources,
+    ...Array.from(cameraTiles.keys()),
+  ].map((sourceId) => String(sourceId || "").trim()).filter(Boolean);
+  return Array.from(new Set(sources));
+}
+
+function inventoryProjectionMissingWithLiveSources(): boolean {
+  return liveSourceIdsForInventoryDiagnostic().length > 0
+    && nvrProjectionState.cameras.length === 0
+    && !(cameraInventory?.mountedDevices?.length);
 }
 
 function mountedCameraRecord(sourceId: string): MountedCameraRecord | null {
@@ -1923,6 +3109,12 @@ async function refreshCameraInventory(): Promise<void> {
       renderNvrSettingsSummary();
       return;
     }
+    if (applyNvrRuntimeProjections() && (nvrProjectionState.cameras.length > 0 || nvrProjectionState.cameraNetwork)) {
+      cameraInventoryLoading = false;
+      cameraInventoryError = "";
+      renderCameraRefreshStatus();
+      return;
+    }
     const hadInventory = hasCameraInventoryData();
     const previousInventory = cameraInventory;
     const trayWasOpen = cameraSettingsTrayOpen();
@@ -1934,7 +3126,7 @@ async function refreshCameraInventory(): Promise<void> {
     }
     renderNvrSettingsSummary();
     try {
-      const payload = await requestAdminAction("list_camera_device_inventory");
+      const payload = await nvrAdminAdapter.request("list_camera_device_inventory");
       const inventory = payload.inventory && typeof payload.inventory === "object"
         ? payload.inventory as CameraInventoryRecord
         : { mountedDevices: [], candidateDevices: [], cameraNetwork: {} };
@@ -1961,7 +3153,7 @@ async function refreshCameraInventory(): Promise<void> {
       }
       cameraInventoryError = "";
     } catch (error) {
-      cameraInventoryError = normalizeAdminError(error);
+      cameraInventoryError = normalizeNvrAdminAdapterError(error);
       addNotification("warn", "Camera inventory unavailable", cameraInventoryError, "camera", {
         activity: "settings",
         settingsTab: "nvr",
@@ -2053,7 +3245,7 @@ async function saveCameraSettings(sourceId: string): Promise<void> {
   cameraApplyPending.add(key);
   updateCameraApplyUi(key);
   try {
-    const payload = await requestAdminAction("apply_camera_device_config", {
+    const payload = await nvrAdminAdapter.request("apply_camera_device_config", {
       sourceId,
       desired: {
         displayName: draft.displayName,
@@ -2119,7 +3311,7 @@ async function mountCameraCandidate(candidateId: string): Promise<void> {
   if (!draft.username.trim() || !draft.password.trim()) {
     throw new Error("username and password are required to mount this camera");
   }
-  const payload = await requestAdminAction("mount_camera_device", {
+  const payload = await nvrAdminAdapter.request("mount_camera_device", {
     candidate,
     displayName: draft.displayName,
     username: draft.username,
@@ -2150,7 +3342,7 @@ async function mountCameraCandidate(candidateId: string): Promise<void> {
 }
 
 async function runMountedCameraProbe(sourceId: string): Promise<void> {
-  const payload = await requestAdminAction("probe_camera_device", { sourceId });
+  const payload = await nvrAdminAdapter.request("probe_camera_device", { sourceId });
   const result = payload.result && typeof payload.result === "object" ? payload.result : payload;
   const mounted = (result as Record<string, unknown>)?.camera;
   const verification = mounted && typeof mounted === "object" && (mounted as Record<string, unknown>).verification
@@ -2180,7 +3372,7 @@ async function runCandidateProbe(candidateId: string): Promise<void> {
     throw new Error("camera candidate is no longer available");
   }
   const draft = candidateMountDraft(candidateId, candidate);
-  const payload = await requestAdminAction("probe_camera_device", {
+  const payload = await nvrAdminAdapter.request("probe_camera_device", {
     ip: candidate.ip,
     username: draft.username,
     password: draft.password,
@@ -2226,7 +3418,7 @@ function ensureCameraTile(sourceId: string): CameraTile {
 
   const title = document.createElement("div");
   title.className = "cameraTitle";
-  const info = serviceAccessCameraInfo(sourceId);
+  const info = runtimeCameraInfo(sourceId);
   title.textContent = cameraDisplayName(sourceId);
   header.appendChild(title);
 
@@ -2315,6 +3507,10 @@ function ensureCameraTile(sourceId: string): CameraTile {
 
   card.appendChild(header);
   card.appendChild(videoWrap);
+  const streamStatus = document.createElement("div");
+  streamStatus.className = "cameraStreamStatus";
+  streamStatus.hidden = true;
+  card.appendChild(streamStatus);
   cameraGridEl.appendChild(card);
 
   card.addEventListener("click", () => {
@@ -2337,6 +3533,7 @@ function ensureCameraTile(sourceId: string): CameraTile {
     card,
     video,
     title,
+    streamStatus,
     gearButton,
     ptzButton,
     videoWrap,
@@ -2347,6 +3544,7 @@ function ensureCameraTile(sourceId: string): CameraTile {
     overlayHideTimer: 0,
   };
   cameraTiles.set(sourceId, tile);
+  renderTileStreamStatus(sourceId);
   scheduleHideCameraOverlay(sourceId);
   updatePtzUi();
   return tile;
@@ -2449,7 +3647,7 @@ function clampPoseValue(value: number): number {
 function updateLiveTileMetadata(sourceId: string): void {
   const tile = cameraTiles.get(sourceId);
   if (!tile) return;
-  const info = serviceAccessCameraInfo(sourceId);
+  const info = runtimeCameraInfo(sourceId);
   tile.title.textContent = cameraDisplayName(sourceId);
   tile.ptzButton.hidden = !PTZ_UI_ENABLED;
   tile.ptzButton.disabled = !ptzUiInteractive(info);
@@ -2462,15 +3660,26 @@ function updateLiveTileMetadata(sourceId: string): void {
 }
 
 async function sendPtzCommand(sourceId: string, payload: Record<string, unknown>): Promise<void> {
-  const info = serviceAccessCameraInfo(sourceId);
+  const info = runtimeCameraInfo(sourceId);
   if (!ptzUiInteractive(info)) return;
   appendLog(`PTZ send ${cameraLabelForSource(sourceId)} ${debugJson(payload)}`);
   try {
-    const result = await requestGatewaySignal("control", {
+    await publishRuntimeStreamControl("ptz.step", {
       sourceId,
       ptz: payload,
     });
-    const ack = extractControlAck(result);
+    const ack = {
+      preempted: false,
+      currentPose: payload.targetPose && typeof payload.targetPose === "object"
+        ? payload.targetPose as CameraPoseView
+        : undefined,
+      desiredPose: payload.targetPose && typeof payload.targetPose === "object"
+        ? payload.targetPose as CameraPoseView
+        : undefined,
+      poseStatus: "queued",
+      managementPlane: "runtime",
+      ptzDiagnostics: null,
+    };
     appendLog(
       `PTZ ack ${cameraLabelForSource(sourceId)} `
       + `status=${ack.poseStatus || "ok"} `
@@ -2525,13 +3734,6 @@ function setTileState(sourceId: string, state: "waiting" | "connecting" | "live"
   tile.card.dataset.state = state;
 }
 
-function attachTrackToTile(sourceId: string, stream: MediaStream): void {
-  const tile = ensureCameraTile(sourceId);
-  tile.video.srcObject = stream;
-  void tile.video.play().catch(() => {});
-  setTileState(sourceId, "live", "Receiving live preview.");
-}
-
 function markAllTiles(state: "waiting" | "connecting" | "unavailable", detail: string): void {
   for (const sourceId of cameraTiles.keys()) {
     setTileState(sourceId, state, detail);
@@ -2562,137 +3764,163 @@ function debugJson(value: unknown): string {
   }
 }
 
-async function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 8_000): Promise<void> {
-  if (pc.iceGatheringState === "complete") return;
-  await new Promise<void>((resolve) => {
-    const timeout = window.setTimeout(() => {
-      pc.removeEventListener("icegatheringstatechange", onChange);
-      resolve();
-    }, timeoutMs);
-    const onChange = () => {
-      if (pc.iceGatheringState !== "complete") return;
-      window.clearTimeout(timeout);
-      pc.removeEventListener("icegatheringstatechange", onChange);
-      resolve();
-    };
-    pc.addEventListener("icegatheringstatechange", onChange);
-  });
+function renderKeyValueGridMarkup(rows: Array<[string, unknown]>): string {
+  return createKeyValueGrid(rows).outerHTML;
 }
 
-function sameIceCandidate(left: RTCIceCandidateInit, right: RTCIceCandidateInit): boolean {
-  return (
-    String(left.candidate || "") === String(right.candidate || "") &&
-    String(left.sdpMid || "") === String(right.sdpMid || "") &&
-    Number(left.sdpMLineIndex ?? -1) === Number(right.sdpMLineIndex ?? -1) &&
-    String(left.usernameFragment || "") === String(right.usernameFragment || "")
+function compactTimestamp(value: unknown): string {
+  const numeric = Number(value || 0);
+  if (!numeric) return "";
+  const ms = numeric < 9_999_999_999 ? numeric * 1000 : numeric;
+  try {
+    return new Date(ms).toLocaleTimeString();
+  } catch {
+    return "";
+  }
+}
+
+function sourceIdFromStreamStatus(record: Record<string, unknown>): string {
+  const recovery = recordFrom(record.recovery);
+  return String(recovery.sourceId || record.sourceId || "").trim();
+}
+
+function streamStatusForSource(sourceId: string): Record<string, unknown> | null {
+  const target = String(sourceId || "").trim();
+  if (!target) return null;
+  const records = nvrProjectionState.streamStatusRecords
+    .filter((record) => sourceIdFromStreamStatus(record) === target)
+    .sort((left, right) => Number(right.issuedAt || 0) - Number(left.issuedAt || 0));
+  return records[0] || null;
+}
+
+function preparedStreamStatus(record: Record<string, unknown> | null): {
+  sessionId: string;
+  state: string;
+  health: string;
+  transport: string;
+  recovering: boolean;
+  backoff: string;
+  updatedAt: string;
+} | null {
+  if (!record) return null;
+  const recovery = recordFrom(record.recovery);
+  const status = String(record.status || "unknown").trim() || "unknown";
+  const codec = String(recovery.codec || "").trim();
+  const selectedStream = String(recovery.selectedStream || "").trim();
+  const repairNeeded = recovery.repairNeeded === true;
+  return {
+    sessionId: String(record.sessionId || recovery.sessionId || "").trim(),
+    state: status,
+    health: repairNeeded ? "repair" : status,
+    transport: ["webrtc", codec, selectedStream].filter(Boolean).join(" / "),
+    recovering: repairNeeded || status === "backoff",
+    backoff: status === "backoff" ? "pending" : "",
+    updatedAt: compactTimestamp(record.issuedAt || recovery.issuedAt),
+  };
+}
+
+function streamTileState(record: Record<string, unknown> | null): "waiting" | "connecting" | "live" | "unavailable" {
+  if (!record) return "connecting";
+  const status = String(record.status || "").trim().toLowerCase();
+  const recovery = recordFrom(record.recovery);
+  if (["ready", "live", "connected", "open"].includes(status) && recovery.repairNeeded !== true) return "live";
+  if (["failed", "error", "unavailable"].includes(status)) return "unavailable";
+  return "connecting";
+}
+
+function renderPreparedStreamStatus(container: HTMLElement, prepared: NonNullable<ReturnType<typeof preparedStreamStatus>>): void {
+  container.innerHTML = `
+    <section class="streamStatus" aria-label="Stream status">
+      <div class="streamStatusHeader">
+        <span>Stream</span>
+        <strong>${escapeHtml(prepared.health || prepared.state)}</strong>
+      </div>
+      <div class="streamStatusMeta">
+        ${prepared.transport ? `<span>${escapeHtml(prepared.transport)}</span>` : ""}
+        ${prepared.recovering ? "<span>recovering</span>" : ""}
+        ${prepared.backoff ? `<span>${escapeHtml(prepared.backoff)}</span>` : ""}
+        ${prepared.updatedAt ? `<span>${escapeHtml(prepared.updatedAt)}</span>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderTileStreamStatus(sourceId: string): void {
+  const tile = cameraTiles.get(sourceId);
+  if (!tile) return;
+  const record = streamStatusForSource(sourceId);
+  const prepared = preparedStreamStatus(record);
+  tile.streamStatus.hidden = !prepared;
+  tile.streamStatus.classList.toggle("warn", recordFrom(record?.recovery).repairNeeded === true);
+  if (!prepared) {
+    tile.streamStatus.replaceChildren();
+    return;
+  }
+  renderPreparedStreamStatus(tile.streamStatus, prepared);
+  const state = streamTileState(record);
+  setTileState(
+    sourceId,
+    state,
+    state === "live"
+      ? "Preview stream is ready from runtime projection."
+      : state === "unavailable"
+        ? "Preview stream is unavailable in runtime projection."
+        : "Preview stream intent is pending.",
   );
 }
 
-async function addRemoteIceCandidates(
-  pc: RTCPeerConnection,
-  candidates: RTCIceCandidateInit[],
-): Promise<void> {
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "object" || !String(candidate.candidate || "").trim()) continue;
-    await pc.addIceCandidate(candidate);
-  }
-}
-
-function localDescriptionPayload(pc: RTCPeerConnection): { type: string; sdp: string } {
-  const desc = pc.localDescription;
-  if (!desc?.type || !desc.sdp) throw new Error("local WebRTC offer is missing");
-  return {
-    type: desc.type,
-    sdp: desc.sdp,
-  };
-}
-
-function extractAnswerDescription(result: GatewaySignalResult): RTCSessionDescriptionInit {
-  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
-  const payload = (root.payload || root.result || root) as Record<string, unknown>;
-
-  const direct = payload && typeof payload === "object"
-    ? payload
-    : {};
-
-  const candidate =
-    (direct.answer as Record<string, unknown> | undefined) ||
-    (direct.payload as Record<string, unknown> | undefined) ||
-    (direct.description as Record<string, unknown> | undefined) ||
-    direct;
-
-  const type = String(candidate?.type || "").trim();
-  const sdp = typeof candidate?.sdp === "string" ? candidate.sdp : "";
-  if (!type || !sdp) {
-    throw new Error("gateway answer payload is missing type/sdp");
-  }
-  return { type: type as RTCSdpType, sdp };
-}
-
-function extractGrantedSources(result: GatewaySignalResult, fallback: string[]): string[] {
-  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
-  const payload = (root.payload || root.result || root) as Record<string, unknown>;
-  const sources = normalizeSourceIds(payload?.sources);
-  return sources.length > 0 ? sources : fallback;
-}
-
-function extractRemoteCandidates(result: GatewaySignalResult): RTCIceCandidateInit[] {
-  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
-  const payload = (root.payload || root.result || root) as Record<string, unknown>;
-
-  const candidateSets = [
-    payload?.candidates,
-    (payload?.answer as Record<string, unknown> | undefined)?.candidates,
-    (payload?.payload as Record<string, unknown> | undefined)?.candidates,
-    (payload?.description as Record<string, unknown> | undefined)?.candidates,
-  ];
-
-  const collected: RTCIceCandidateInit[] = [];
-  for (const set of candidateSets) {
-    if (!Array.isArray(set)) continue;
-    for (const entry of set) {
-      if (!entry || typeof entry !== "object") continue;
-      const candidate = entry as RTCIceCandidateInit;
-      if (!String(candidate.candidate || "").trim()) continue;
-      if (!collected.some((existing) => sameIceCandidate(existing, candidate))) {
-        collected.push(candidate);
-      }
-    }
-  }
-  return collected;
-}
-
-function extractControlAck(result: GatewaySignalResult): {
-  preempted: boolean;
-  currentPose?: CameraPoseView;
-  desiredPose?: CameraPoseView;
-  poseStatus?: string;
-  managementPlane?: string;
-  ptzDiagnostics?: unknown;
-} {
-  const outer = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const root = ((outer.result && typeof outer.result === "object") ? outer.result : outer) as Record<string, unknown>;
-  const payload = (root.payload || root.result || root) as Record<string, unknown>;
-  return {
-    preempted: payload.preempted === true,
-    currentPose: payload.currentPose && typeof payload.currentPose === "object" ? payload.currentPose as CameraPoseView : undefined,
-    desiredPose: payload.desiredPose && typeof payload.desiredPose === "object" ? payload.desiredPose as CameraPoseView : undefined,
-    poseStatus: String(payload.poseStatus || "").trim() || undefined,
-    managementPlane: String(payload.managementPlane || "").trim() || undefined,
-    ptzDiagnostics: payload.ptzDiagnostics,
-  };
-}
-
-function renderKvRow(label: string, value: string): string {
+function renderProjectionSyncSummary(): string {
+  const records = Object.entries(nvrProjectionState.projectionRecords);
+  if (records.length === 0) return "";
   return `
-    <div class="kv">
-      <div class="k">${escapeHtml(label)}</div>
-      <div class="v">${escapeHtml(value)}</div>
-    </div>
+    <section class="nestedPanel runtimeProjectionPanel">
+      <div class="summaryLabel">Runtime Projection</div>
+      ${renderKeyValueGridMarkup(records.map(([channelId, record]) => {
+        const freshness = record.freshness && typeof record.freshness === "object" ? record.freshness : {};
+        const state = String(freshness.state || "fresh").trim() || "fresh";
+        const revision = String(record.revision || "").trim();
+        const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
+        return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
+      }))}
+    </section>
   `;
+}
+
+function renderStoragePinIntentSummary(): string {
+  const intents = nvrProjectionState.storagePinIntents;
+  if (intents.length === 0) return "";
+  return `
+    <section class="nestedPanel storagePinPanel">
+      <div class="summaryLabel">Storage Pin Intents</div>
+      <p class="panelHint">Control records only; media bytes stay outside runtime projection state.</p>
+      ${renderKeyValueGridMarkup(intents.map((intent) => {
+        const objectCount = Array.isArray(intent.objectRefs) ? intent.objectRefs.length : 0;
+        const status = String(intent.status || "pending").trim() || "pending";
+        return [
+          String(intent.intentId || "pin intent"),
+          `${status} / ${objectCount} object ref${objectCount === 1 ? "" : "s"} / ${Number(intent.desiredReplicas || 0) || 1} replica${Number(intent.desiredReplicas || 0) === 1 ? "" : "s"}`,
+        ];
+      }))}
+    </section>
+  `;
+}
+
+function renderHistoryProjectionStatus(): void {
+  const pinSummary = renderStoragePinIntentSummary();
+  const statusSummary = renderProjectionSyncSummary();
+  const existing = historyViewEl.querySelector<HTMLElement>("[data-role='history-projection-status']");
+  if (!pinSummary && !statusSummary) {
+    existing?.remove();
+    return;
+  }
+  let wrap = existing;
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.dataset.role = "history-projection-status";
+    wrap.className = "historyProjectionStatus";
+    historyHintEl.insertAdjacentElement("afterend", wrap);
+  }
+  wrap.innerHTML = `${pinSummary}${statusSummary}`;
 }
 
 function formatPose(pose: CameraPoseView | null | undefined, status = ""): string {
@@ -2727,41 +3955,51 @@ function renderCameraNetworkSummary(network: CameraNetworkSummaryRecord): string
   }
 
   return `
-    ${renderKvRow("Managed", network.managed ? "yes" : "no")}
-    ${renderKvRow("Interface", String(network.interface || "not configured"))}
-    ${renderKvRow("Subnet", String(network.subnetCidr || "not configured"))}
-    ${renderKvRow("Host IP", String(network.hostIp || "not configured"))}
-    ${renderKvRow("DHCP", network.dhcpEnabled ? `${String(network.dhcpRangeStart || "—")} → ${String(network.dhcpRangeEnd || "—")}` : "disabled")}
-    ${renderKvRow("NTP", network.ntpEnabled ? String(network.ntpServer || "enabled") : "disabled")}
-    ${renderKvRow("Timezone", String(network.timezone || "UTC"))}
-    ${renderKvRow("DNS", String(network.dnsServer || "not configured"))}
+    ${renderKeyValueGridMarkup([
+      ["Managed", network.managed ? "yes" : "no"],
+      ["Interface", String(network.interface || "not configured")],
+      ["Subnet", String(network.subnetCidr || "not configured")],
+      ["Host IP", String(network.hostIp || "not configured")],
+      ["DHCP", network.dhcpEnabled ? `${String(network.dhcpRangeStart || "—")} → ${String(network.dhcpRangeEnd || "—")}` : "disabled"],
+      ["NTP", network.ntpEnabled ? String(network.ntpServer || "enabled") : "disabled"],
+      ["Timezone", String(network.timezone || "UTC")],
+      ["DNS", String(network.dnsServer || "not configured")],
+    ])}
     ${cameraInventoryError ? `<p class="panelHint warnText">${escapeHtml(cameraInventoryError)}</p>` : ""}
   `;
 }
 
 function renderNvrSettingsSummary(): void {
-  if (!nvrSettingsSummaryEl || !serviceAccessContext) return;
-  const display = serviceAccessContext.display || {};
+  if (!nvrSettingsSummaryEl || !runtimeServiceContext) return;
+  const display = runtimeServiceContext.display || {};
   const grantedScope = display.grantedScope || {};
   const network = cameraInventory?.cameraNetwork || {};
   const accessSummary = nvrAccessSummary();
+  const projectionSummary = renderProjectionSyncSummary();
+  const storageSummary = renderStoragePinIntentSummary();
   nvrSettingsSummaryEl.innerHTML = `
     <section class="nestedPanel">
       <div class="summaryLabel">Service</div>
-      ${renderKvRow("Label", serviceLabelForContext(serviceAccessContext))}
-      ${renderKvRow("Service", String(display.service || serviceAccessContext.service || "nvr"))}
-      ${renderKvRow("Version", String(display.serviceVersion || "unknown"))}
-      ${renderKvRow("Health", String(display.status || "online"))}
-      ${viewerIsOwner() ? renderKvRow("Admin", cameraInventoryError ? "gateway update required" : "available") : ""}
+      ${renderKeyValueGridMarkup([
+        ["Label", serviceLabelForContext(runtimeServiceContext)],
+        ["Service", String(display.service || runtimeServiceContext.service || "nvr")],
+        ["Version", String(display.serviceVersion || "unknown")],
+        ["Health", String(display.status || "online")],
+        ["Admin", viewerIsOwner() ? (cameraInventoryError ? "gateway update required" : "available") : ""],
+      ])}
     </section>
     <section class="nestedPanel">
       <div class="summaryLabel">Gateway</div>
-      ${renderKvRow("Gateway", gatewayLabelForContext(serviceAccessContext))}
-      ${renderKvRow("Access scope", viewerIsOwner() ? "owner" : "granted")}
-      ${renderKvRow("Access", accessSummary)}
-      ${!viewerIsOwner() ? renderKvRow("Live scope", formatCameraScope(grantedScope.viewSources || []) || "granted cameras") : ""}
-      ${!viewerIsOwner() && PTZ_UI_ENABLED ? renderKvRow("PTZ scope", formatCameraScope(grantedScope.controlSources || []) || "none") : ""}
+      ${renderKeyValueGridMarkup([
+        ["Gateway", gatewayLabelForContext(runtimeServiceContext)],
+        ["Access scope", viewerIsOwner() ? "owner" : "granted"],
+        ["Access", accessSummary],
+        ["Live scope", !viewerIsOwner() ? formatCameraScope(grantedScope.viewSources || []) || "granted cameras" : ""],
+        ["PTZ scope", !viewerIsOwner() && PTZ_UI_ENABLED ? formatCameraScope(grantedScope.controlSources || []) || "none" : ""],
+      ])}
     </section>
+    ${projectionSummary}
+    ${storageSummary}
     ${
       viewerIsOwner()
         ? `<section class="nestedPanel">
@@ -2779,11 +4017,10 @@ async function fetchGrantInventory(): Promise<void> {
     return;
   }
   try {
-    const result = await requestGatewayGrantAction("list_grants");
-    const payload = (result.result && typeof result.result === "object") ? result.result as Record<string, unknown> : {};
+    await publishRuntimeServiceIntent("list_grants", {}, GRANT_REQUEST_TIMEOUT_MS);
     grantInventory = {
-      grants: Array.isArray(payload.grants) ? payload.grants as GatewayGrantRecord[] : [],
-      availableCameras: Array.isArray(payload.availableCameras) ? payload.availableCameras as CameraGrantView[] : [],
+      grants: [],
+      availableCameras: settingsCameraRows(),
     };
   } catch (error) {
     grantInventory = { grants: [], availableCameras: settingsCameraRows() };
@@ -2797,7 +4034,7 @@ function nvrAccessSummary(): string {
       ? `Owner control • shared with ${shareCount} identit${shareCount === 1 ? "y" : "ies"}`
       : "Owner control";
   }
-  const grantedScope = serviceAccessContext?.display?.grantedScope || {};
+  const grantedScope = runtimeServiceContext?.display?.grantedScope || {};
   const live = formatCameraScope(grantedScope.viewSources || []) || "granted cameras";
   if (!PTZ_UI_ENABLED) {
     return `Granted access • live ${live}`;
@@ -2806,7 +4043,7 @@ function nvrAccessSummary(): string {
   return `Granted access • live ${live} • PTZ ${ptz}`;
 }
 
-function cameraAccessSummary(camera: ServiceAccessCameraDisplay | null): string {
+function cameraAccessSummary(camera: RuntimeCameraAccessDisplay | null): string {
   if (!camera) return "Access unavailable";
   if (viewerIsOwner()) {
     const shareCount = (grantInventory?.grants || []).filter((grant) => {
@@ -2826,7 +4063,7 @@ function cameraAccessSummary(camera: ServiceAccessCameraDisplay | null): string 
 function renderCameraList(): void {
   const focusSnapshot = captureCameraSettingsFocus();
   cameraListEl.innerHTML = "";
-  if (!serviceAccessContext) return;
+  if (!runtimeServiceContext) return;
   if (viewerIsOwner() && cameraInventoryError) {
     const warning = document.createElement("section");
     warning.className = "nestedPanel";
@@ -2836,8 +4073,18 @@ function renderCameraList(): void {
     `;
     cameraListEl.appendChild(warning);
   }
+  const liveInventoryGap = inventoryProjectionMissingWithLiveSources();
+  if (liveInventoryGap) {
+    const warning = document.createElement("section");
+    warning.className = "nestedPanel";
+    warning.innerHTML = `
+      <div class="summaryLabel">Inventory Projection</div>
+      <p class="panelHint warnText">Live source present; camera inventory projection is missing.</p>
+    `;
+    cameraListEl.appendChild(warning);
+  }
   const cameras = settingsCameraRows()
-    .map((row) => serviceAccessCameraInfo(String(row.sourceId || "").trim()) || {
+    .map((row) => runtimeCameraInfo(String(row.sourceId || "").trim()) || {
       sourceId: row.sourceId,
       name: row.name,
       viewGranted: true,
@@ -2846,12 +4093,14 @@ function renderCameraList(): void {
     })
     .sort((left, right) => String(left.name || left.sourceId || "").localeCompare(String(right.name || right.sourceId || "")));
   if (cameras.length === 0) {
-    cameraListEl.innerHTML = `<article class="emptyState emptyStateTight"><strong>No cameras</strong><p>Camera inventory appears here once the service reports sources.</p></article>`;
+    cameraListEl.innerHTML = liveInventoryGap
+      ? `<article class="emptyState emptyStateTight"><strong>Inventory projection missing</strong><p>Live source is present, but retained camera inventory has not materialized yet.</p></article>`
+      : `<article class="emptyState emptyStateTight"><strong>No cameras</strong><p>Camera inventory appears here once the service reports sources.</p></article>`;
   } else {
     for (const camera of cameras) {
       const sourceId = String(camera.sourceId || "").trim();
       if (!sourceId) continue;
-      const info = serviceAccessCameraInfo(sourceId) || camera;
+      const info = runtimeCameraInfo(sourceId) || camera;
       const mounted = mountedCameraRecord(sourceId);
       const item = document.createElement("article");
       item.className = "cameraListItem";
@@ -3003,7 +4252,7 @@ function renderCameraList(): void {
 }
 
 function buildCameraSettingsTray(sourceId: string): HTMLElement {
-  const camera = serviceAccessCameraInfo(sourceId);
+  const camera = runtimeCameraInfo(sourceId);
   const mounted = mountedCameraRecord(sourceId);
   const caps = mounted?.capabilities || {};
   const canAdmin = ownerCanAdmin();
@@ -3028,12 +4277,14 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   summaryPanel.className = "nestedPanel";
   summaryPanel.innerHTML = `
     <div class="summaryLabel">Camera Summary</div>
-    ${driverId ? renderKvRow("Driver", driverId) : ""}
-    ${vendor ? renderKvRow("Vendor", vendor) : ""}
-    ${model ? renderKvRow("Model", model) : ""}
-    ${renderKvRow("Access", cameraAccessSummary(camera))}
-    ${showPtzSummary ? renderKvRow("PTZ", camera.controlGranted ? "owner control ready" : "available") : ""}
-    ${showPtzSummary ? renderKvRow("Pose", formatPose(currentPose, poseStatus)) : ""}
+    ${renderKeyValueGridMarkup([
+      ["Driver", driverId],
+      ["Vendor", vendor],
+      ["Model", model],
+      ["Access", cameraAccessSummary(camera)],
+      ["PTZ", showPtzSummary ? (camera.controlGranted ? "owner control ready" : "available") : ""],
+      ["Pose", showPtzSummary ? formatPose(currentPose, poseStatus) : ""],
+    ])}
   `;
   tray.appendChild(summaryPanel);
 
@@ -3214,23 +4465,12 @@ function buildCameraSettingsTray(sourceId: string): HTMLElement {
   return tray;
 }
 
-function cameraCountForContext(context: ServiceAccessContext): number {
-  const display = context.display || {};
-  return Number(
-    display.cameraCount
-    || normalizeServiceAccessCameraEntries(display).length
-    || display.configuredSources
-    || normalizeSourceIds(display.sources).length
-    || 0,
-  );
-}
-
-function refreshSummary(context: ServiceAccessContext): void {
+function refreshSummary(context: RuntimeServiceContext): void {
   const display = context.display || {};
   rememberResolvedResourceName(context.servicePk, display.serviceLabel);
-  serviceAccessCameraInfoBySourceId.clear();
-  for (const camera of normalizeServiceAccessCameraEntries(display)) {
-    serviceAccessCameraInfoBySourceId.set(String(camera.sourceId || "").trim(), camera);
+  runtimeCameraInfoBySourceId.clear();
+  for (const camera of normalizeRuntimeCameraEntries(display)) {
+    runtimeCameraInfoBySourceId.set(String(camera.sourceId || "").trim(), camera);
   }
   popGatewayEl.textContent = gatewayLabelForContext(context);
   popGatewayEl.title = context.gatewayPk;
@@ -3245,17 +4485,17 @@ function refreshSummary(context: ServiceAccessContext): void {
 }
 
 function refreshRuntimeProjectionLabels(): void {
-  if (!serviceAccessContext) return;
-  popGatewayEl.textContent = gatewayLabelForContext(serviceAccessContext);
-  popGatewayEl.title = serviceAccessContext.gatewayPk;
-  const cameraCount = cameraCountForContext(serviceAccessContext);
-  popServicesEl.textContent = `${serviceLabelForContext(serviceAccessContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
-  popServicesEl.title = serviceAccessContext.servicePk;
+  if (!runtimeServiceContext) return;
+  popGatewayEl.textContent = gatewayLabelForContext(runtimeServiceContext);
+  popGatewayEl.title = runtimeServiceContext.gatewayPk;
+  const cameraCount = cameraCountForContext(runtimeServiceContext);
+  popServicesEl.textContent = `${serviceLabelForContext(runtimeServiceContext)} (${cameraCount} camera${cameraCount === 1 ? "" : "s"})`;
+  popServicesEl.title = runtimeServiceContext.servicePk;
   refreshIdentityHandle();
 }
 
-function renderServiceAccessContextTiles(context: ServiceAccessContext): boolean {
-  const requestedSources = normalizeSourceIds(context.display?.sources);
+function renderRuntimeProjectionTiles(context: RuntimeServiceContext): boolean {
+  const requestedSources = runtimePreviewSourceIds(context);
   if (requestedSources.length === 0) {
     cameraTiles.clear();
     setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
@@ -3279,25 +4519,13 @@ function renderServiceAccessContextTiles(context: ServiceAccessContext): boolean
   return true;
 }
 
-async function loadServiceAccessContext(): Promise<ServiceAccessContext> {
-  const contextId = parseServiceAccessId();
-  if (!contextId) return await requestDirectEntryServiceAccessContext();
-
-  let fromRuntime: ServiceAccessContext | null = null;
-  try {
-    fromRuntime = await requestServiceAccessContextFromRuntime(contextId);
-  } catch (error) {
-    throw serviceAccessError("service_access_context", String((error as Error)?.message || error || "runtime service access context request failed"));
-  }
-  if (fromRuntime) return fromRuntime;
-  throw serviceAccessError("service_access_context", "service access context is unavailable in the shared runtime");
+async function loadRuntimeServiceContext(): Promise<RuntimeServiceContext> {
+  return await requestDirectEntryRuntimeContext();
 }
 
-function isDirectEntryIdleServiceAccessFailure(error: ServiceAccessError): boolean {
-  if (!directEntryServiceAccessAttempted) return false;
+function isDirectEntryIdleRuntimeFailure(error: RuntimeContextError): boolean {
   const detail = String(error.detail || "").toLowerCase();
   return detail.includes("no security cameras service is available")
-    || detail.includes("service access context is unavailable")
     || detail.includes("shared browser runtime unavailable")
     || detail.includes("runtime broker unavailable")
     || detail.includes("runtime broker missing")
@@ -3305,142 +4533,70 @@ function isDirectEntryIdleServiceAccessFailure(error: ServiceAccessError): boole
     || detail.includes("device key is not ready");
 }
 
-function sourceIdForTrack(event: RTCTrackEvent): string {
-  const pc = peerConnection;
-  if (!pc) return "";
-  const index = pc.getTransceivers().indexOf(event.transceiver);
-  if (index >= 0 && index < transceiverSourceIds.length) {
-    return transceiverSourceIds[index];
-  }
-  return transceiverSourceIds[0] || "";
-}
-
-async function connectLiveGrid(context: ServiceAccessContext): Promise<void> {
-  const display = context.display || {};
-  app.dataset.serviceAccessStage = "service_signal";
-  const requestedSources = normalizeSourceIds(display.sources);
+async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
+  app.dataset.runtimeStage = "runtime_intent";
+  const requestedSources = runtimePreviewSourceIds(context);
   if (requestedSources.length === 0) {
     cancelScheduledReconnect();
     setGridEmpty("No Cameras", "The managed NVR service has not reported any enabled sources yet.");
     setConnectionState("no cameras", "warn");
     setDrawerStatus("No enabled camera sources were advertised by the NVR service.");
-    void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "service_access_authorization");
+    void reportServiceStatus("no cameras", "The managed NVR service did not advertise any enabled sources.", "runtime_directory");
     return;
   }
 
-  renderServiceAccessContextTiles(context);
+  renderRuntimeProjectionTiles(context);
 
-  setConnectionState("negotiating", "warn");
-  setDrawerStatus("Negotiating live preview through the owned gateway.");
-  void reportServiceStatus("negotiating", "Negotiating live preview through the owned gateway.", "service_signal");
-
-  const rtcConfig: RTCConfiguration = {
-    iceServers: buildRtcIceServers(display.iceServers),
-    bundlePolicy: "max-bundle",
-  };
+  const authority = await waitForRuntimeAuthorityReady();
+  if (!runtimeAuthorityReady(authority)) {
+    closePeerConnection();
+    markRuntimeAuthorityWaiting(authority);
+    scheduleRuntimeAuthorityReconnect(runtimeAuthorityBlockedDetail(authority));
+    return;
+  }
 
   closePeerConnection();
-  const connection = new RTCPeerConnection(rtcConfig);
-  peerConnection = connection;
-  transceiverSourceIds = [...requestedSources];
-  const localCandidates: RTCIceCandidateInit[] = [];
-  let firstTrackSeen = false;
-
   for (const sourceId of requestedSources) {
-    connection.addTransceiver("video", { direction: "recvonly" });
-    setTileState(sourceId, "connecting", "Waiting for answer from the gateway.");
+    setTileState(sourceId, "connecting", "Runtime stream intent queued.");
   }
 
-  connection.addEventListener("icecandidate", (event) => {
-    if (peerConnection !== connection) return;
-    const json = event.candidate?.toJSON();
-    if (!json || !String(json.candidate || "").trim()) return;
-    if (!localCandidates.some((existing) => sameIceCandidate(existing, json))) {
-      localCandidates.push(json);
-    }
+  setConnectionState("connecting", "warn");
+  setDrawerStatus("Requesting live preview through runtime.");
+  void reportServiceStatus("connecting", "Requesting live preview through runtime.", "runtime_intent");
+  const streamIntent = await publishRuntimeStreamIntent(requestedSources).catch((error) => {
+    throw runtimeContextError("runtime_intent", String((error as Error)?.message || error || "runtime stream intent failed"));
   });
-
-  connection.addEventListener("track", (event) => {
-    if (peerConnection !== connection) return;
-    cancelScheduledReconnect();
-    reconnectAttemptCount = 0;
-    if (!firstTrackSeen) {
-      firstTrackSeen = true;
-      markStartupStage("nvr.first-track");
-    }
-    const sourceId = sourceIdForTrack(event);
-    // Bind each preview tile to the specific remote video track instead of trusting
-    // browser stream grouping. Multiple remote video tracks may share one MediaStream id.
-    const stream = new MediaStream([event.track]);
-    attachTrackToTile(sourceId || event.track.id, stream);
-    setConnectionState("live", "good");
-    setDrawerStatus("Live preview connected.");
-    void reportServiceStatus("live", "Receiving live H.264 preview.", "webrtc_media");
-  });
-
-  connection.addEventListener("connectionstatechange", () => {
-    if (peerConnection !== connection) return;
-    const state = connection.connectionState || "unknown";
-    appendLog(`peer connection state -> ${state}`);
-    if (state === "failed" || state === "disconnected") {
-      scheduleAutomaticReconnect(`peer connection ${state}`);
-    }
-  });
-
-  connection.addEventListener("iceconnectionstatechange", () => {
-    if (peerConnection !== connection) return;
-    const state = connection.iceConnectionState || "unknown";
-    appendLog(`ice connection state -> ${state}`);
-    if (state === "checking") {
-      setConnectionState("checking", "warn");
-      setDrawerStatus("Checking ICE connectivity.");
-    } else if (state === "connected" || state === "completed") {
-      cancelScheduledReconnect();
-      reconnectAttemptCount = 0;
-      setConnectionState("connected", "good");
-      setDrawerStatus("WebRTC peer connection established.");
-      void reportServiceStatus("connected", "WebRTC peer connection established.", "webrtc_media");
-    } else if (state === "failed") {
-      scheduleAutomaticReconnect("ice connectivity failed");
-    }
-  });
-
-  const offer = await connection.createOffer();
-  await connection.setLocalDescription(offer);
-  await waitForIceGatheringComplete(connection);
-
-  appendLog(`sending offer for ${requestedSources.length} source(s)`);
-  markStartupStage("nvr.offer-sent");
-  const result = await requestGatewaySignal("offer", {
-    description: localDescriptionPayload(connection),
-    candidates: localCandidates,
-    sourceIds: requestedSources,
-  }).catch((error) => {
-    throw serviceAccessError("service_signal", String((error as Error)?.message || error || "gateway signaling failed"));
-  });
-
-  const grantedSources = extractGrantedSources(result, requestedSources);
-  for (const sourceId of requestedSources) {
-    if (!grantedSources.includes(sourceId)) {
-      setTileState(sourceId, "unavailable", "Source was not granted by the NVR service.");
-    }
+  if (runtimeIntentWaitingAuthority(streamIntent)) {
+    closePeerConnection();
+    markRuntimeAuthorityWaiting({
+      state: streamIntent.authorityLifecycleState || streamIntent.result?.authorityLifecycleState || streamIntent.state || streamIntent.result?.state || "waitingAuthority",
+      ready: false,
+      blockedAuthorityDomain: streamIntent.blockedAuthorityDomain || streamIntent.result?.blockedAuthorityDomain || "runtime",
+      reason: String(streamIntent.authoritySummary?.reason || "Runtime authority became unavailable while opening the preview.").trim(),
+    });
+    scheduleRuntimeAuthorityReconnect("runtime authority became unavailable");
+    return;
   }
-
-  const answer = extractAnswerDescription(result);
-  const remoteCandidates = extractRemoteCandidates(result);
-  app.dataset.serviceAccessStage = "webrtc_media";
-  await connection.setRemoteDescription(answer).catch((error) => {
-    throw serviceAccessError("webrtc_media", String((error as Error)?.message || error || "remote description failed"));
-  });
-  await addRemoteIceCandidates(connection, remoteCandidates).catch((error) => {
-    throw serviceAccessError("webrtc_media", String((error as Error)?.message || error || "remote ICE candidate failed"));
-  });
-  appendLog("remote answer applied");
-  markStartupStage("nvr.answer-applied");
+  markStartupStage("nvr.stream-intent.queued");
+  applyNvrRuntimeProjections();
   if (!hasLiveTiles()) {
-    setConnectionState("connecting", "warn");
-    setDrawerStatus("Waiting for live media tracks.");
+    const posture = runtimeStreamSessionPosture();
+    if (posture.waitingRouteCount > 0) {
+      markRouteBaselineWaiting();
+      noteRouteBaselinePending("stream route baseline pending after activation");
+    } else {
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Waiting for stream projection.");
+    }
+    scheduleStreamLiveWatchdog("runtime stream intent queued without live track");
   }
+}
+
+function runtimePreviewSourceIds(context: RuntimeServiceContext): string[] {
+  const display = context.display || {};
+  const sources = normalizeSourceIds(display.sources);
+  if (sources.length > 0) return sources;
+  return cameraCountForContext(context) > 0 ? [NVR_AUTO_PREVIEW_SOURCE_ID] : [];
 }
 
 function cancelScheduledReconnect(): void {
@@ -3450,17 +4606,247 @@ function cancelScheduledReconnect(): void {
   }
 }
 
-function scheduleAutomaticReconnect(reason: string): void {
-  if (!serviceAccessContext || scheduledReconnectTimer || reconnectInFlight) return;
-  reconnectAttemptCount += 1;
-  const delayMs = Math.min(5_000, 1_500 + ((reconnectAttemptCount - 1) * 1_000));
-  appendLog(`scheduling automatic reconnect in ${delayMs}ms (${reason})`);
-  setConnectionState("reconnecting", "warn");
-  setDrawerStatus("Live preview interrupted. Reconnecting automatically.");
-  for (const sourceId of cameraTiles.keys()) {
-    setTileState(sourceId, "connecting", "Reconnecting live preview…");
+function cancelStreamLiveWatchdog(): void {
+  if (streamLiveWatchdogTimer) {
+    window.clearTimeout(streamLiveWatchdogTimer);
+    streamLiveWatchdogTimer = 0;
   }
-  void reportServiceStatus("reconnecting", `Live preview interrupted; reconnecting automatically (${reason}).`, "webrtc_media");
+}
+
+function reconnectDelayMs(attempt: number, baseMs: number, maxMs: number): number {
+  const step = Math.min(5, Math.max(0, attempt - 1));
+  const jitter = Math.floor(Math.random() * Math.min(1_000, baseMs));
+  return Math.min(maxMs, (baseMs * (2 ** step)) + jitter);
+}
+
+type RuntimeStreamRecoveryPosture = {
+  state?: string;
+  parentIntentId?: string;
+  attempt?: number;
+  delayMs?: number;
+  nextRetryAt?: number;
+  reason?: string;
+};
+
+function runtimeStreamRecoveryParentIntentId(context: RuntimeServiceContext | null = runtimeServiceContext): string {
+  if (!context) return RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID;
+  const sourceKey = runtimePreviewSourceIds(context).join(",");
+  return sourceKey ? `${RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID}:${sourceKey}` : RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID;
+}
+
+async function runtimeStreamRecoveryPosture(
+  reason: string,
+  attempt: number,
+  fallbackDelayMs: number,
+): Promise<RuntimeStreamRecoveryPosture> {
+  const context = runtimeServiceContext;
+  if (!context) {
+    return { state: "localFallback", attempt, delayMs: fallbackDelayMs, reason };
+  }
+  try {
+    const posture = await runtimeCall<RuntimeStreamRecoveryPosture>(RUNTIME_STREAM_RECOVERY_REQUEST, {
+      payload: {
+        action: "schedule",
+        parentIntentId: runtimeStreamRecoveryParentIntentId(context),
+        reason,
+        attemptHint: attempt,
+        baseMs: RUNTIME_STREAM_RECONNECT_BASE_MS,
+        maxMs: RUNTIME_STREAM_RECONNECT_MAX_MS,
+        fallbackDelayMs,
+        sourceIds: runtimePreviewSourceIds(context),
+        sessionCount: activeRuntimeStreamSessions().length,
+      },
+    }, RUNTIME_WRITE_TIMEOUT_MS);
+    return (posture && typeof posture === "object") ? posture : { state: "localFallback", attempt, delayMs: fallbackDelayMs, reason };
+  } catch (error) {
+    appendLog(`runtime stream recovery posture unavailable: ${String((error as Error)?.message || error)}`);
+    return { state: "localFallback", attempt, delayMs: fallbackDelayMs, reason };
+  }
+}
+
+function resetRuntimeStreamRecovery(reason: string): void {
+  const context = runtimeServiceContext;
+  if (!context) return;
+  void runtimeCall(RUNTIME_STREAM_RECOVERY_REQUEST, {
+    payload: {
+      action: "reset",
+      parentIntentId: runtimeStreamRecoveryParentIntentId(context),
+      reason,
+      sourceIds: runtimePreviewSourceIds(context),
+      sessionCount: activeRuntimeStreamSessions().length,
+    },
+  }, RUNTIME_WRITE_TIMEOUT_MS).catch((error) => {
+    appendLog(`runtime stream recovery reset failed: ${String((error as Error)?.message || error)}`);
+  });
+}
+
+function activeRuntimeStreamSessions(): RuntimeStreamSession[] {
+  return Array.from(new Set(runtimeStreamSessionsBySessionId.values()));
+}
+
+function runtimeStreamSessionPosture(): {
+  sessionCount: number;
+  waitingRouteCount: number;
+  waitingServiceAcceptanceCount: number;
+  serviceAdmissionTimedOutCount: number;
+  waitingAnswerCount: number;
+  rejectedCount: number;
+  answerReceivedCount: number;
+  expiresAt: number;
+} {
+  return summarizeRuntimeStreamSessionPosture(activeRuntimeStreamSessions());
+}
+
+function noteRouteBaselinePending(_reason: string): void {
+  const now = Date.now();
+  if (now - routeBaselineNoticeAt < 30_000) return;
+  routeBaselineNoticeAt = now;
+}
+
+function markRouteBaselineWaiting(): void {
+  setConnectionState("connecting", "warn");
+  setDrawerStatus("Stream activation is waiting for route baseline.");
+  for (const sourceId of cameraTiles.keys()) {
+    setTileState(sourceId, "connecting", "Waiting for route baseline.");
+  }
+  void reportServiceStatus("connecting", "Stream activation is waiting for route baseline.", "stream_projection");
+}
+
+function scheduleStreamLiveWatchdog(reason: string): void {
+  cancelStreamLiveWatchdog();
+  if (!runtimeServiceContext) return;
+  streamLiveWatchdogTimer = window.setTimeout(() => {
+    streamLiveWatchdogTimer = 0;
+    if (hasLiveTiles()) return;
+    const posture = runtimeStreamSessionPosture();
+    const activationStillOpen = posture.sessionCount > 0
+      && (!posture.expiresAt || posture.expiresAt > Date.now());
+    if (activationStillOpen && posture.waitingRouteCount > 0) {
+      noteRouteBaselinePending(`${posture.waitingRouteCount} active stream session(s) awaiting route baseline`);
+      markRouteBaselineWaiting();
+      scheduleStreamLiveWatchdog("stream route baseline still pending");
+      return;
+    }
+    if (activationStillOpen && posture.serviceAdmissionTimedOutCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.serviceAdmissionTimedOutCount} timed-out service admission session(s)`);
+      setConnectionState("unavailable", "bad");
+      setDrawerStatus("Stream route delivered, but the service did not admit the request.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "unavailable", "Stream service did not admit the request.");
+      }
+      void reportServiceStatus("unavailable", "Stream route delivered, but the service did not admit the request.", "stream_projection");
+      return;
+    }
+    if (activationStillOpen && posture.waitingServiceAcceptanceCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.waitingServiceAcceptanceCount} active session(s) awaiting service acceptance`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Stream route delivered; waiting for service acceptance.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Waiting for stream service acceptance.");
+      }
+      void reportServiceStatus("connecting", "Stream route delivered; waiting for service acceptance.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream service acceptance still pending");
+      return;
+    }
+    if (activationStillOpen && posture.waitingAnswerCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.waitingAnswerCount} accepted session(s) awaiting stream answer`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Stream service accepted; waiting for answer.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Waiting for stream answer.");
+      }
+      void reportServiceStatus("connecting", "Stream service accepted; waiting for answer.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream service answer still pending");
+      return;
+    }
+    if (activationStillOpen && posture.rejectedCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.rejectedCount} rejected session(s)`);
+      setConnectionState("unavailable", "bad");
+      setDrawerStatus("Stream service rejected.");
+      void reportServiceStatus("unavailable", "Stream service rejected.", "stream_projection");
+      return;
+    }
+    if (activationStillOpen && posture.answerReceivedCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.answerReceivedCount} answered session(s) awaiting media track`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Stream answer received; waiting for media track.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Waiting for live media track.");
+      }
+      void reportServiceStatus("connecting", "Stream answer received; waiting for media track.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream answer received without live track");
+      return;
+    }
+    appendLog(`stream live watchdog fired: ${reason}`);
+    setConnectionState("reconnecting", "warn");
+    setDrawerStatus("Stream route delivered; retrying live adapter.");
+    for (const sourceId of cameraTiles.keys()) {
+      setTileState(sourceId, "connecting", "Retrying live preview adapter...");
+    }
+    void reportServiceStatus("reconnecting", "Stream route delivered but no live media track attached; retrying.", "stream_adapter");
+    scheduleAutomaticReconnect("stream adapter did not become live");
+  }, RUNTIME_STREAM_LIVE_WATCHDOG_MS);
+}
+
+function scheduleAutomaticReconnect(reason: string): void {
+  if (!runtimeServiceContext || scheduledReconnectTimer || reconnectInFlight || reconnectScheduleInFlight) return;
+  reconnectAttemptCount += 1;
+  const attempt = reconnectAttemptCount;
+  const fallbackDelayMs = reconnectDelayMs(
+    reconnectAttemptCount,
+    RUNTIME_STREAM_RECONNECT_BASE_MS,
+    RUNTIME_STREAM_RECONNECT_MAX_MS,
+  );
+  reconnectScheduleInFlight = true;
+  void (async () => {
+    try {
+      const posture = await runtimeStreamRecoveryPosture(reason, attempt, fallbackDelayMs);
+      if (!runtimeServiceContext || scheduledReconnectTimer || reconnectInFlight) return;
+      const delayMs = Math.max(0, Number(posture.delayMs || fallbackDelayMs) || fallbackDelayMs);
+      appendLog(`scheduling automatic reconnect in ${delayMs}ms (${reason})`);
+      setConnectionState("reconnecting", "warn");
+      setDrawerStatus("Live preview interrupted. Reconnecting automatically.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Reconnecting live preview...");
+      }
+      void reportServiceStatus("reconnecting", `Live preview interrupted; reconnecting automatically (${reason}).`, "stream_projection");
+      scheduledReconnectTimer = window.setTimeout(() => {
+        scheduledReconnectTimer = 0;
+        reconnectInFlight = (async () => {
+          let retryReason = "";
+          try {
+            await reconnect();
+          } catch (error) {
+            const detail = String((error as Error)?.message || error || "automatic reconnect failed");
+            appendLog(`automatic reconnect failed: ${detail}`);
+            setConnectionState("reconnect failed", "bad");
+            setDrawerStatus(detail);
+            markAllTiles("unavailable", "Live preview unavailable.");
+            void reportServiceStatus("degraded", detail, "stream_projection");
+            retryReason = detail;
+          } finally {
+            reconnectInFlight = null;
+            if (retryReason) scheduleAutomaticReconnect(retryReason);
+          }
+        })();
+      }, delayMs);
+    } finally {
+      reconnectScheduleInFlight = false;
+    }
+  })();
+}
+
+function scheduleRuntimeAuthorityReconnect(reason: string): void {
+  if (!runtimeServiceContext || scheduledReconnectTimer || reconnectInFlight) return;
+  reconnectAttemptCount += 1;
+  const delayMs = reconnectDelayMs(
+    reconnectAttemptCount,
+    RUNTIME_AUTHORITY_RECONNECT_BASE_MS,
+    RUNTIME_AUTHORITY_RECONNECT_MAX_MS,
+  );
+  appendLog(`scheduling runtime authority reconnect in ${delayMs}ms (${reason})`);
+  setConnectionState("waiting authority", "warn");
+  setDrawerStatus("Waiting for runtime authority.");
   scheduledReconnectTimer = window.setTimeout(() => {
     scheduledReconnectTimer = 0;
     reconnectInFlight = (async () => {
@@ -3468,16 +4854,13 @@ function scheduleAutomaticReconnect(reason: string): void {
       try {
         await reconnect();
       } catch (error) {
-        const detail = String((error as Error)?.message || error || "automatic reconnect failed");
-        appendLog(`automatic reconnect failed: ${detail}`);
-        setConnectionState("reconnect failed", "bad");
-        setDrawerStatus(detail);
-        markAllTiles("unavailable", "Live preview unavailable.");
-        void reportServiceStatus("degraded", detail, "webrtc_media");
+        const detail = String((error as Error)?.message || error || "runtime authority reconnect failed");
+        appendLog(`runtime authority reconnect failed: ${detail}`);
+        markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: detail });
         retryReason = detail;
       } finally {
         reconnectInFlight = null;
-        if (retryReason) scheduleAutomaticReconnect(retryReason);
+        if (retryReason) scheduleRuntimeAuthorityReconnect(retryReason);
       }
     })();
   }, delayMs);
@@ -3485,59 +4868,144 @@ function scheduleAutomaticReconnect(reason: string): void {
 
 async function reconnect(): Promise<void> {
   cancelScheduledReconnect();
-  if (!serviceAccessContext) {
-    serviceAccessContext = await loadServiceAccessContext();
+  if (!runtimeServiceContext) {
+    runtimeServiceContext = await loadRuntimeServiceContext();
   }
-  refreshSummary(serviceAccessContext);
-  await connectLiveGrid(serviceAccessContext);
+  refreshSummary(runtimeServiceContext);
+  await ensureRuntimeSwarmEdgeForContext(runtimeServiceContext).catch((error) => {
+    appendLog(`runtime swarm edge attach unavailable: ${String((error as Error)?.message || error)}`);
+  });
+  await connectLiveGrid(runtimeServiceContext);
+}
+
+function cancelDirectEntryRuntimeRepair(): void {
+  if (directEntryRepairTimer) {
+    window.clearTimeout(directEntryRepairTimer);
+    directEntryRepairTimer = 0;
+  }
+}
+
+async function activateRuntimeServiceContext(context: RuntimeServiceContext, source: string): Promise<void> {
+  cancelDirectEntryRuntimeRepair();
+  directEntryRepairAttemptCount = 0;
+  runtimeServiceContext = await persistRuntimeServiceContext(context);
+  appendLog(`runtime context loaded for service ${pkLabel(runtimeServiceContext.servicePk)}${source ? ` (${source})` : ""}`);
+  markStartupStage("nvr.runtime-context.loaded");
+  refreshSummary(runtimeServiceContext);
+  applyNvrRuntimeProjections();
+  renderRuntimeProjectionTiles(runtimeServiceContext);
+  syncUiToHash();
+  dismissBootSplash();
+  markStartupStage("nvr.first-paint");
+  void fetchGrantInventory().catch(() => {});
+  void refreshCameraInventory().catch((error) => {
+    addNotification("warn", "Camera inventory unavailable", String((error as Error)?.message || error), "camera", {
+      activity: "settings",
+      settingsTab: "cameras",
+    });
+  });
+  void reconnect().catch((error) => {
+    handleNonFatalLiveFailure(error);
+  });
+}
+
+async function repairDirectEntryRuntimeContext(): Promise<boolean> {
+  const snapshot = await currentRuntimeSnapshot();
+  const record = directEntryNvrServiceRecord(snapshot);
+  if (!record) return false;
+  const servicePk = applianceDevicePk(record);
+  const gatewayPk = applianceGatewayPk(record);
+  if (!servicePk || !gatewayPk) return false;
+  await activateRuntimeServiceContext(contextFromRuntimeRecord(record, snapshot), "runtime repair");
+  return true;
+}
+
+function scheduleDirectEntryRuntimeRepair(reason: string): void {
+  if (runtimeServiceContext || directEntryRepairTimer || directEntryRepairInFlight) return;
+  if (directEntryRepairAttemptCount >= DIRECT_ENTRY_REPAIR_MAX_ATTEMPTS) {
+    setConnectionState("idle", "neutral");
+    setDrawerStatus("No Security Cameras service is currently available from this account runtime.");
+    setGridEmpty(
+      "No Security Cameras Service",
+      "Connect an account with access to an NVR service, then this app will open it directly.",
+    );
+    return;
+  }
+  directEntryRepairAttemptCount += 1;
+  const delayMs = Math.min(
+    DIRECT_ENTRY_REPAIR_MAX_DELAY_MS,
+    DIRECT_ENTRY_REPAIR_DELAY_MS + ((directEntryRepairAttemptCount - 1) * 500),
+  );
+  appendLog(`scheduling runtime service repair in ${delayMs}ms (${reason})`);
+  setConnectionState("loading", "neutral");
+  setDrawerStatus("Waiting for Security Cameras service from the account runtime.");
+  directEntryRepairTimer = window.setTimeout(() => {
+    directEntryRepairTimer = 0;
+    directEntryRepairInFlight = (async () => {
+      let activated = false;
+      try {
+        activated = await repairDirectEntryRuntimeContext();
+      } catch (error) {
+        appendLog(`runtime service repair failed: ${String((error as Error)?.message || error)}`);
+      } finally {
+        directEntryRepairInFlight = null;
+        if (!activated && !runtimeServiceContext) {
+          scheduleDirectEntryRuntimeRepair("Security Cameras service still absent");
+        }
+      }
+    })();
+  }, delayMs);
 }
 
 function handleNonFatalLiveFailure(error: unknown): void {
-  const serviceAccessFailure = asServiceAccessError(error, "webrtc_media");
-  console.error(serviceAccessFailure);
+  const runtimeFailure = asRuntimeContextError(error, "stream_projection");
+  const retryable = !isRuntimeMediaTransportProfileFailure(runtimeFailure);
+  console.error(runtimeFailure);
   closePeerConnection();
-  app.dataset.serviceAccessStage = serviceAccessFailure.stage;
+  app.dataset.runtimeStage = runtimeFailure.stage;
   setConnectionState("unavailable", "bad");
-  setDrawerStatus(serviceAccessFailure.detail);
+  setDrawerStatus(runtimeFailure.detail);
   if (cameraTiles.size > 0) {
-    markAllTiles("unavailable", "Live preview unavailable.");
+    markAllTiles("unavailable", retryable ? "Live preview unavailable." : runtimeFailure.detail);
   } else {
-    setGridEmpty("Live Preview Unavailable", serviceAccessFailure.detail);
+    setGridEmpty("Live Preview Unavailable", runtimeFailure.detail);
   }
-  addNotification("bad", "Live preview unavailable", serviceAccessFailure.detail, "app");
-  appendLog(`degraded [${serviceAccessFailure.stage}] ${serviceAccessFailure.detail}`);
-  void reportServiceStatus("degraded", serviceAccessFailure.detail, serviceAccessFailure.stage);
-  scheduleAutomaticReconnect(serviceAccessFailure.detail);
+  addNotification("bad", "Live preview unavailable", runtimeFailure.detail, "app");
+  appendLog(`degraded [${runtimeFailure.stage}] ${runtimeFailure.detail}`);
+  void reportServiceStatus(retryable ? "degraded" : "blocked", runtimeFailure.detail, runtimeFailure.stage);
+  if (retryable) scheduleAutomaticReconnect(runtimeFailure.detail);
 }
 
-function closePeerConnection(): void {
+function publishRuntimeStreamSessionClose(session: RuntimeStreamSession, reasonCode: string): void {
+  if (!runtimeServiceContext || !runtimePort) return;
+  void publishRuntimeStreamControl("close", {
+    sessionId: session.sessionId,
+    sourceId: session.sourceId,
+    reasonCode,
+  }).catch((error) => {
+    appendLog(`queued stream close failed: ${String((error as Error)?.message || error)}`);
+  });
+}
+
+function closePeerConnection(reasonCode = "peerConnectionClosed", publishClose = true): void {
   cancelScheduledReconnect();
-  if (peerConnection) {
+  cancelStreamLiveWatchdog();
+  for (const session of runtimeStreamSessionsBySessionId.values()) {
     try {
-      peerConnection.close();
+      if (publishClose) publishRuntimeStreamSessionClose(session, reasonCode);
+      reportMediaFulfillmentEvidence(mediaFulfillmentReleaseEvidence(session, reasonCode));
+      closeBrowserStreamSession(session);
     } catch {}
-    peerConnection = null;
   }
-}
-
-function fireAndForgetSessionClose(): void {
-  if (!serviceAccessContext || !runtimePort) return;
-  try {
-    const requestId = randomOpaqueId("nvr-close");
-    runtimePort.postMessage({
-      type: BROKER.SERVICE_SIGNAL_REQUEST,
-      requestId,
-      payload: {
-        requestId,
-        gatewayPk: serviceAccessContext.gatewayPk,
-        servicePk: serviceAccessContext.servicePk,
-        service: serviceAccessContext.service || "nvr",
-        serviceCapability: serviceAccessContext.serviceCapability,
-        signalType: "session_close",
-        payload: { reason: "page_unload" },
-      },
-    });
-  } catch {}
+  runtimeStreamSessionsByFrameId.clear();
+  runtimeStreamSessionsBySessionId.clear();
+  runtimeStreamSessionsByCorrelationKey.clear();
+  unboundRuntimeStreamFrameKeys.clear();
+  for (const tile of cameraTiles.values()) {
+    try {
+      tile.video.srcObject = null;
+    } catch {}
+  }
 }
 
 function bindUi(): void {
@@ -3628,9 +5096,8 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("hashchange", () => syncUiToHash());
 
 window.addEventListener("beforeunload", () => {
-  void reportServiceStatus("idle", "Constitute NVR window closed.", "service_signal");
-  fireAndForgetSessionClose();
-  closePeerConnection();
+  void reportServiceStatus("idle", "Constitute NVR window closed.", "runtime_intent");
+  closePeerConnection("page_unload");
 });
 
 installDiagnosticsBridge();
@@ -3647,40 +5114,22 @@ async function bootstrap(): Promise<void> {
   setBootSplash("Connecting");
   setConnectionState("loading", "neutral");
   setDrawerStatus("Preparing Security Cameras.");
-  app.dataset.serviceAccessStage = "service_access_context";
+  app.dataset.runtimeStage = "runtime_context";
   appendLog("bootstrapping managed NVR app surface");
   markStartupStage("nvr.boot.start");
-  void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "service_access_context");
+  void reportServiceStatus("loading", "Bootstrapping managed NVR app surface.", "runtime_context");
 
-  serviceAccessContext = await loadServiceAccessContext();
-  serviceAccessContext = await persistServiceAccessContext(serviceAccessContext);
-  appendLog(`service access context loaded for service ${pkLabel(serviceAccessContext.servicePk)}`);
-  markStartupStage("nvr.service-access-context.loaded");
-  refreshSummary(serviceAccessContext);
-  renderServiceAccessContextTiles(serviceAccessContext);
-  syncUiToHash();
-  dismissBootSplash();
-  markStartupStage("nvr.first-paint");
-  void fetchGrantInventory().catch(() => {});
-  void refreshCameraInventory().catch((error) => {
-    addNotification("warn", "Camera inventory unavailable", String((error as Error)?.message || error), "camera", {
-      activity: "settings",
-      settingsTab: "cameras",
-    });
-  });
-  void reconnect().catch((error) => {
-    handleNonFatalLiveFailure(error);
-  });
+  await activateRuntimeServiceContext(await loadRuntimeServiceContext(), "bootstrap");
 }
 
 void bootstrap().catch((error) => {
-  const serviceAccessFailure = asServiceAccessError(error, "service_access_context");
+  const runtimeFailure = asRuntimeContextError(error, "runtime_context");
   closePeerConnection();
   dismissBootSplash();
-  app.dataset.serviceAccessStage = serviceAccessFailure.stage;
-  const message = serviceAccessFailure.detail;
-  if (isDirectEntryIdleServiceAccessFailure(serviceAccessFailure)) {
-    console.warn(serviceAccessFailure);
+  app.dataset.runtimeStage = runtimeFailure.stage;
+  const message = runtimeFailure.detail;
+  if (isDirectEntryIdleRuntimeFailure(runtimeFailure)) {
+    console.warn(runtimeFailure);
     setConnectionState("idle", "neutral");
     const lowerMessage = message.toLowerCase();
     const accountRequired = lowerMessage.includes("link an identity") || lowerMessage.includes("device key is not ready");
@@ -3692,18 +5141,19 @@ void bootstrap().catch((error) => {
       : "Connect an account with access to an NVR service, then this app will open it directly.";
     setDrawerStatus(accountRequired
       ? "Account setup is required before Security Cameras can connect."
-      : "No Security Cameras service is currently available from this account runtime.");
-    setGridEmpty(title, body);
+      : "Waiting for Security Cameras service from the account runtime.");
+    setGridEmpty(accountRequired ? title : "Finding Security Cameras Service", body);
     addNotification("warn", "Security Cameras unavailable", message, "app");
-    appendLog(`idle [${serviceAccessFailure.stage}] ${message}`);
-    void reportServiceStatus("idle", message, serviceAccessFailure.stage);
+    appendLog(`idle [${runtimeFailure.stage}] ${message}`);
+    void reportServiceStatus("idle", message, runtimeFailure.stage);
+    if (!accountRequired) scheduleDirectEntryRuntimeRepair(message);
     return;
   }
-  console.error(serviceAccessFailure);
+  console.error(runtimeFailure);
   setConnectionState("error", "bad");
-  setDrawerStatus(serviceAccessFailure.detail);
-  setGridEmpty("Service Access Failed", `${serviceAccessFailure.stage}: ${message}`);
-  addNotification("bad", "Service access failed", message, "app");
-  appendLog(`fatal [${serviceAccessFailure.stage}] ${message}`);
-  void reportServiceStatus("error", message, serviceAccessFailure.stage);
+  setDrawerStatus(runtimeFailure.detail);
+  setGridEmpty("Runtime Context Failed", `${runtimeFailure.stage}: ${message}`);
+  addNotification("bad", "Runtime context failed", message, "app");
+  appendLog(`fatal [${runtimeFailure.stage}] ${message}`);
+  void reportServiceStatus("error", message, runtimeFailure.stage);
 });
