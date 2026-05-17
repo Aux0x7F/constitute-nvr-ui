@@ -6,8 +6,11 @@ import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surf
 import {
   materializationBudgetLimit,
   requireSurfaceMaterializationBudget,
-  requireSurfaceModuleRole,
 } from "../../constitute-ui/src/surface-app-contract.js";
+import {
+  createSurfaceModuleRegistry,
+  surfaceModuleRegistryPosture,
+} from "../../constitute-ui/src/surface-module-registry.js";
 import { renderShell } from "./shell";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
@@ -90,16 +93,69 @@ import {
   type MediaTransportObservation,
 } from "../../constitute-protocol/src/index.js";
 
+const nvrSurfaceModuleRegistry = createSurfaceModuleRegistry([
+  {
+    moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
+    role: SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,
+    version: "0.1.0",
+    implementation: { createRuntimeSurfaceClient },
+  },
+  {
+    moduleRef: "constitute-nvr-ui/nvr-projection-model@0.2.0",
+    role: SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL,
+    version: "0.2.0",
+    implementation: {
+      cameraCountForContext,
+      humanizeSourceId,
+      normalizeRuntimeCameraEntries,
+      normalizeSourceIds,
+      nvrDisplayFromRecord,
+    },
+  },
+  {
+    moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
+    role: SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
+    version: "0.1.0",
+    implementation: {
+      bindBrowserMediaStream,
+      browserStreamAvailable,
+      collectBrowserMediaFulfillmentEvidence,
+      createBrowserStreamOffer,
+      runtimeMediaTransportContract,
+    },
+  },
+  {
+    moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
+    role: SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
+    version: "0.2.0",
+    implementation: { createNvrAdminAdapter, normalizeNvrAdminAdapterError },
+  },
+  {
+    moduleRef: "constitute-nvr-ui/product-view@0.2.0",
+    role: SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW,
+    version: "0.2.0",
+    implementation: { renderShell },
+  },
+]);
+
+function requireNvrSurfaceModuleClaim(role: string, options: { moduleRef: string; primitiveRef?: string }) {
+  const posture = surfaceModuleRegistryPosture(nvrSurfaceModuleRegistry, nvrSurfaceApp, role, options);
+  if (posture.state !== "ready" || !posture.claim) {
+    throw new Error(`NVR surface module unavailable: ${posture.blockedReason} ${role} ${options.moduleRef}`.trim());
+  }
+  return posture.claim;
+}
+
 const nvrSurfaceModules = Object.freeze({
-  runtimeClient: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
+  runtimeClient: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT, {
     moduleRef: "constitute-ui/runtime-surface-client@0.1.0",
     primitiveRef: "runtime.attach",
   }),
-  platformAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
+  platformAdapter: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER, {
     moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
     primitiveRef: "media.transport.path",
   }),
-  serviceSurfaceAdapter: requireSurfaceModuleRole(nvrSurfaceApp, SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
+  serviceSurfaceAdapter: requireNvrSurfaceModuleClaim(SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER, {
     moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
     primitiveRef: "stream.intent",
   }),

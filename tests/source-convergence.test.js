@@ -117,10 +117,14 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   const main = source("constitute-nvr-ui/src/main.ts");
 
   assert.match(main, /createRuntimeSurfaceClient/);
-  assert.match(main, /requireSurfaceModuleRole/);
+  assert.match(main, /createSurfaceModuleRegistry/);
+  assert.match(main, /surfaceModuleRegistryPosture/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.match(main, /from "\.\.\/\.\.\/constitute-ui\/src\/surface-module-registry\.js"/);
   assert.match(main, /from "\.\/surface-app-contract\.js"/);
   assert.match(main, /nvrSurfaceModules/);
+  assert.match(main, /nvrSurfaceModuleRegistry/);
+  assert.match(main, /requireNvrSurfaceModuleClaim/);
   assert.match(main, /activeRuntimeClientModuleRef/);
   assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
