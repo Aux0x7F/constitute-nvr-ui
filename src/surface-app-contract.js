@@ -1,4 +1,4 @@
-import { SURFACE_APP, assertSurfaceAppContract } from "../../constitute-protocol/src/index.js";
+import { SURFACE_APP, SWARM, assertSurfaceAppContract } from "../../constitute-protocol/src/index.js";
 import { defineSurfaceAppContract } from "../../constitute-ui/src/surface-app-contract.js";
 
 const ISSUED_AT = 1700000000;
@@ -87,8 +87,44 @@ export const nvrSurfaceAppContract = assertSurfaceAppContract({
     { projectionId: "nvr.streams", channelId: "nvr.streams" },
   ],
   materializationBudgets: [
-    { budgetId: "nvr-ui.preview", maxItems: 2 },
-    { budgetId: "nvr-ui.stream-events", maxItems: 240 },
+    {
+      kind: SWARM.RECORD_KIND.MATERIALIZATION_BUDGET,
+      budgetId: "nvr-ui.preview",
+      sourceAuthority: "runtime.media.transport.path",
+      consumerRef: "nvr-ui.preview",
+      payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.MEDIA,
+      copyRole: SWARM.MATERIALIZATION_COPY_ROLE.TRANSPORT,
+      transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.NATIVE,
+      privacyTier: SWARM.MATERIALIZATION_PRIVACY_TIER.UI_PROJECTION,
+      state: SWARM.RESOURCE_POSTURE_STATE.WITHIN_BUDGET,
+      limits: { maxItems: 2, maxActivePreviews: 2 },
+      snapshotPolicy: { mode: "none" },
+      deltaPolicy: { mode: "media-evidence" },
+      coalescing: { key: "sourceId" },
+      cardinality: { maxSourceIds: 2 },
+      schema: { state: SWARM.MATERIALIZATION_SCHEMA_STATE.CURRENT, version: "nvr-ui.preview.v1" },
+      issuedAt: ISSUED_AT,
+    },
+    {
+      kind: SWARM.RECORD_KIND.MATERIALIZATION_BUDGET,
+      budgetId: "nvr-ui.stream-events",
+      sourceAuthority: "runtime.media.fulfillment",
+      consumerRef: "nvr-ui.stream-events",
+      payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.EVIDENCE,
+      copyRole: SWARM.MATERIALIZATION_COPY_ROLE.BUFFER,
+      transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.REFERENCE_ONLY,
+      privacyTier: SWARM.MATERIALIZATION_PRIVACY_TIER.SAFE_FACTS,
+      state: SWARM.RESOURCE_POSTURE_STATE.WITHIN_BUDGET,
+      limits: { maxItems: 240 },
+      snapshotPolicy: { mode: "bounded-session-buffer" },
+      deltaPolicy: { mode: "coalesced-by-session" },
+      coalescing: { key: "sessionId" },
+      cardinality: { maxSessionRefs: 240 },
+      schema: { state: SWARM.MATERIALIZATION_SCHEMA_STATE.CURRENT, version: "nvr-ui.stream-events.v1" },
+      referenceRefs: ["runtime.media.fulfillment"],
+      retentionClass: "ephemeral.ui-evidence",
+      issuedAt: ISSUED_AT,
+    },
   ],
   updatePosture: {
     state: SURFACE_APP.UPDATE_POSTURE.STATIC,

@@ -3,7 +3,11 @@ import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
 import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
-import { requireSurfaceModuleRole } from "../../constitute-ui/src/surface-app-contract.js";
+import {
+  materializationBudgetLimit,
+  requireSurfaceMaterializationBudget,
+  requireSurfaceModuleRole,
+} from "../../constitute-ui/src/surface-app-contract.js";
 import { renderShell } from "./shell";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
@@ -100,9 +104,33 @@ const nvrSurfaceModules = Object.freeze({
   }),
 });
 
+const nvrSurfaceBudgets = Object.freeze({
+  preview: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.preview", {
+    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.MEDIA,
+    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.TRANSPORT,
+    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.NATIVE,
+  }),
+  streamEvents: requireSurfaceMaterializationBudget(nvrSurfaceApp, "nvr-ui.stream-events", {
+    payloadClass: SWARM.MATERIALIZATION_PAYLOAD_CLASS.EVIDENCE,
+    copyRole: SWARM.MATERIALIZATION_COPY_ROLE.BUFFER,
+    transferMode: SWARM.MATERIALIZATION_TRANSFER_MODE.REFERENCE_ONLY,
+  }),
+});
+
+const NVR_PREVIEW_SOURCE_LIMIT = Math.max(
+  1,
+  materializationBudgetLimit(
+    nvrSurfaceBudgets.preview,
+    "maxActivePreviews",
+    materializationBudgetLimit(nvrSurfaceBudgets.preview, "maxItems", 2),
+  ),
+);
+const NVR_STREAM_EVENT_LIMIT = Math.max(1, materializationBudgetLimit(nvrSurfaceBudgets.streamEvents, "maxItems", 240));
+
 const nvrRuntimeAttachContext = Object.freeze({
   ...nvrSurfaceAttachContext,
   activeRuntimeClientModuleRef: nvrSurfaceModules.runtimeClient.moduleRef,
+  materializationBudgetRefs: Object.freeze(Object.values(nvrSurfaceBudgets).map((budget) => String(budget.budgetId || ""))),
 });
 
 type RuntimeZoneScope = {
@@ -2287,6 +2315,8 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       },
       candidates: offerCandidates,
       mediaTransportProfile: runtimeMediaTransportContract(mediaTransportProfile),
+      materializationBudgetRef: String(nvrSurfaceBudgets.preview.budgetId || "nvr-ui.preview"),
+      evidenceBudgetRef: String(nvrSurfaceBudgets.streamEvents.budgetId || "nvr-ui.stream-events"),
       iceServers: {
         stun: runtimeMediaIceServerUrls(mediaTransportProfile, "stun:"),
         turn: runtimeMediaIceServerUrls(mediaTransportProfile, "turn:"),
@@ -4647,7 +4677,7 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
 function runtimePreviewSourceIds(context: RuntimeServiceContext): string[] {
   const display = context.display || {};
   const sources = normalizeSourceIds(display.sources);
-  if (sources.length > 0) return sources;
+  if (sources.length > 0) return sources.slice(0, NVR_PREVIEW_SOURCE_LIMIT);
   return cameraCountForContext(context) > 0 ? [NVR_AUTO_PREVIEW_SOURCE_ID] : [];
 }
 
@@ -4733,7 +4763,7 @@ function resetRuntimeStreamRecovery(reason: string): void {
 }
 
 function activeRuntimeStreamSessions(): RuntimeStreamSession[] {
-  return Array.from(new Set(runtimeStreamSessionsBySessionId.values()));
+  return Array.from(new Set(runtimeStreamSessionsBySessionId.values())).slice(-NVR_STREAM_EVENT_LIMIT);
 }
 
 function runtimeStreamSessionPosture(): {
