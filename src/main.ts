@@ -4,6 +4,7 @@ import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
 import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
 import { renderShell } from "./shell";
+import { nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
   RUNTIME_AUTHORITY_POSTURE_GET,
@@ -1329,6 +1330,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       debug: diagnosticsEnabled,
       debugInfo: runtimeAttachDebugInfo(window.location.origin),
       logPrefix: "nvr-ui",
+      attachContext: nvrSurfaceAttachContext,
       onPort: (port) => {
         runtimePort = port as MessagePort;
         runtimeAttached = false;

@@ -112,6 +112,8 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
 
   assert.match(main, /createRuntimeSurfaceClient/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.match(main, /from "\.\/surface-app-contract\.js"/);
+  assert.match(main, /attachContext: nvrSurfaceAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
   assert.match(main, /PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID/);
   assert.match(main, /RUNTIME_STREAM_OPEN/);
@@ -131,6 +133,18 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   assert.doesNotMatch(main, /runtimeReadyPromise/);
   assert.doesNotMatch(main, /RUNTIME_WORKER_VERSION = Object\.freeze/);
   assert.doesNotMatch(main, /constitute-account-runtime-\$\{RUNTIME_WORKER_BUILD_ID\}/);
+});
+
+test("nvr ui declares a surface app contract", async () => {
+  const { nvrSurfaceApp, nvrSurfaceAttachContext } = await import("../src/surface-app-contract.js");
+  assert.equal(nvrSurfaceApp.posture.state, "ready");
+  assert.equal(nvrSurfaceApp.hasRole("runtimeClient"), true);
+  assert.equal(nvrSurfaceApp.hasRole("projectionModel"), true);
+  assert.equal(nvrSurfaceApp.hasRole("platformAdapter"), true);
+  assert.equal(nvrSurfaceApp.hasRole("serviceSurfaceAdapter"), true);
+  assert.equal(nvrSurfaceApp.hasRole("productView"), true);
+  assert.equal(nvrSurfaceAttachContext.kind, "surface.app.attachContext");
+  assert.equal(nvrSurfaceAttachContext.appId, "constitute-nvr-ui");
 });
 
 test("nvr service administration uses a service-surface adapter boundary", () => {
