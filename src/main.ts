@@ -48,6 +48,8 @@ import {
   closeBrowserStreamSession,
   createBrowserStreamOffer,
   isRuntimeMediaTransportProfileFailure,
+  MEDIA_RENDER_BLOCKED_GRACE_MS,
+  MEDIA_RENDER_WAITING_GRACE_MS,
   mediaFulfillmentEvidenceFromAdapterState,
   mediaFulfillmentEvidenceFromRender,
   mediaFulfillmentEvidenceFromTrack,
@@ -2060,6 +2062,13 @@ function mediaEvidenceBlockedReason(evidence: MediaFulfillmentEvidence): string 
   return String((evidence as MediaFulfillmentEvidence & { blockedReason?: string }).blockedReason || "").trim();
 }
 
+function mediaEvidenceReadinessState(evidence: MediaFulfillmentEvidence): string {
+  const safeFacts = evidence.safeFacts && typeof evidence.safeFacts === "object"
+    ? evidence.safeFacts as Record<string, unknown>
+    : {};
+  return String(safeFacts.readinessState || "").trim();
+}
+
 function handleRuntimeStreamStaleMedia(session: RuntimeStreamSession, reason: string): void {
   if (session.adapterFailureNotified) return;
   session.adapterFailureNotified = true;
@@ -2075,7 +2084,18 @@ function handleRuntimeStreamStaleMedia(session: RuntimeStreamSession, reason: st
   scheduleAutomaticReconnect(detail);
 }
 
-function reportBrowserMediaStats(session: RuntimeStreamSession): void {
+function reportRenderReadiness(session: RuntimeStreamSession, video: HTMLVideoElement): MediaFulfillmentEvidence {
+  const evidence = mediaFulfillmentEvidenceFromRender(session, video);
+  reportMediaFulfillmentEvidence(evidence);
+  const blockedReason = mediaEvidenceBlockedReason(evidence);
+  if (evidence.state === SWARM.MEDIA_FULFILLMENT_STATE.BLOCKED && blockedReason) {
+    handleRuntimeStreamStaleMedia(session, blockedReason);
+  }
+  return evidence;
+}
+
+function reportBrowserMediaStats(session: RuntimeStreamSession, video?: HTMLVideoElement): void {
+  if (video) reportRenderReadiness(session, video);
   void collectBrowserMediaFulfillmentEvidence(session).then((evidence) => {
     reportMediaFulfillmentEvidenceBatch(evidence);
     const stalled = evidence.find((entry) => (
@@ -2087,11 +2107,11 @@ function reportBrowserMediaStats(session: RuntimeStreamSession): void {
   }).catch(() => {});
 }
 
-function startRuntimeStreamStatsMonitor(session: RuntimeStreamSession): void {
+function startRuntimeStreamStatsMonitor(session: RuntimeStreamSession, video?: HTMLVideoElement): void {
   if (session.mediaStatsTimer) return;
-  reportBrowserMediaStats(session);
+  reportBrowserMediaStats(session, video);
   session.mediaStatsTimer = window.setInterval(() => {
-    reportBrowserMediaStats(session);
+    reportBrowserMediaStats(session, video);
   }, RUNTIME_STREAM_MEDIA_STATS_POLL_MS);
 }
 
@@ -2099,11 +2119,17 @@ function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaS
   const tile = ensureCameraTile(sourceId);
   tile.video.srcObject = stream as MediaStream;
   reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
-  reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
-  startRuntimeStreamStatsMonitor(session);
-  const markLive = () => {
+  startRuntimeStreamStatsMonitor(session, tile.video);
+  const markRenderLive = (evidence = reportRenderReadiness(session, tile.video)) => {
+    if (evidence.state !== SWARM.MEDIA_FULFILLMENT_STATE.USABLE) {
+      const readiness = mediaEvidenceReadinessState(evidence) || "waitingRender";
+      setTileState(sourceId, "connecting", `Waiting for render readiness (${readiness}).`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus(`Live media track attached; waiting for render readiness (${MEDIA_RENDER_WAITING_GRACE_MS / 1000}-${MEDIA_RENDER_BLOCKED_GRACE_MS / 1000}s).`);
+      scheduleStreamLiveWatchdog("stream answer received without render readiness");
+      return;
+    }
     reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
-    reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
     reportBrowserMediaStats(session);
     cancelStreamLiveWatchdog();
     reconnectAttemptCount = 0;
@@ -2113,16 +2139,18 @@ function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaS
     setDrawerStatus("Live preview connected.");
   };
   const markPendingRender = () => {
-    reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromRender(session, tile.video));
+    const evidence = reportRenderReadiness(session, tile.video);
+    if (evidence.state === SWARM.MEDIA_FULFILLMENT_STATE.USABLE) markRenderLive(evidence);
   };
   track.addEventListener("mute", () => reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track)));
   track.addEventListener("ended", () => reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track)), { once: true });
-  track.addEventListener("unmute", markLive, { once: true });
+  track.addEventListener("unmute", markPendingRender, { once: true });
   tile.video.addEventListener("loadedmetadata", markPendingRender, { once: true });
   tile.video.addEventListener("resize", markPendingRender);
-  tile.video.addEventListener("playing", markLive, { once: true });
+  tile.video.addEventListener("playing", markRenderLive, { once: true });
   if (track.readyState === "live") {
-    markLive();
+    markPendingRender();
+    window.setTimeout(markRenderLive, 1_000);
   }
 }
 

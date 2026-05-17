@@ -264,8 +264,11 @@ test("nvr ui keeps live media state distinct from route delivery and inventory g
   const nvr = source("constitute-nvr-ui/src/main.ts");
 
   assert.match(nvr, /if \(hasLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
-  assert.match(nvr, /const markLive = \(\) => \{[\s\S]*?setTileState\(sourceId, "live"/);
-  assert.match(nvr, /tile\.video\.addEventListener\("playing", markLive, \{ once: true \}\)/);
+  assert.match(nvr, /const markRenderLive = \(evidence = reportRenderReadiness\(session, tile\.video\)\) => \{[\s\S]*?setTileState\(sourceId, "live"/);
+  assert.match(nvr, /evidence\.state !== SWARM\.MEDIA_FULFILLMENT_STATE\.USABLE/);
+  assert.match(nvr, /tile\.video\.addEventListener\("playing", markRenderLive, \{ once: true \}\)/);
+  assert.match(nvr, /track\.readyState === "live"[\s\S]*?markPendingRender\(\);[\s\S]*?window\.setTimeout\(markRenderLive, 1_000\)/);
+  assert.doesNotMatch(nvr, /track\.readyState === "live"[\s\S]*?markLive\(\)/);
   assert.match(nvr, /scheduleStreamLiveWatchdog\("runtime stream intent queued without live track"\)/);
   assert.match(nvr, /function inventoryProjectionMissingWithLiveSources\(/);
   assert.match(nvr, /Live source present; camera inventory projection is missing\./);
