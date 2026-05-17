@@ -1,5 +1,10 @@
 import { SURFACE_APP, SWARM, assertSurfaceAppContract } from "../../constitute-protocol/src/index.js";
-import { defineSurfaceAppContract } from "../../constitute-ui/src/surface-app-contract.js";
+import {
+  defineSurfaceAppContract,
+  surfaceAppBootstrapPosture,
+  surfaceServiceManagerOperationPosture,
+  surfaceServiceManagerProofDigest,
+} from "../../constitute-ui/src/surface-app-contract.js";
 
 const ISSUED_AT = 1700000000;
 
@@ -130,6 +135,23 @@ export const nvrSurfaceAppContract = assertSurfaceAppContract({
     state: SURFACE_APP.UPDATE_POSTURE.STATIC,
     checkedAt: ISSUED_AT,
   },
+  serviceManagerPosture: {
+    managerId: "manager:manual:nvr-ui",
+    subjectRef: "service:nvr",
+    managerRef: "manager:manual:nvr-ui",
+    state: SURFACE_APP.SERVICE_MANAGER_POSTURE.MANUAL,
+    serviceRefs: ["service:nvr"],
+    capabilityRefs: ["service.manage"],
+    evidenceRefs: ["build:nvr-ui:local"],
+    issuedAt: ISSUED_AT,
+  },
+  secretBoundary: {
+    state: SURFACE_APP.SECRET_BOUNDARY.NOT_REQUIRED,
+  },
+  releasePosture: {
+    state: SURFACE_APP.RELEASE_POSTURE.STATIC,
+    evidenceRefs: ["build:nvr-ui:local"],
+  },
   issuedAt: ISSUED_AT,
 });
 
@@ -137,6 +159,25 @@ export const nvrSurfaceApp = defineSurfaceAppContract(nvrSurfaceAppContract, {
   validate: assertSurfaceAppContract,
 });
 
+export const nvrSurfaceBootstrapPosture = surfaceAppBootstrapPosture(nvrSurfaceApp, {
+  issuedAt: ISSUED_AT,
+});
+
+export const nvrServiceManagerOperationPosture = surfaceServiceManagerOperationPosture(nvrSurfaceApp, {
+  operation: SURFACE_APP.SERVICE_MANAGER_OPERATION.HEALTH_CHECK,
+  operationId: "operation:nvr-ui:bootstrap-health",
+  requestedAt: ISSUED_AT,
+});
+
+export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvrSurfaceApp, {
+  operationPosture: nvrServiceManagerOperationPosture,
+  digestId: "proof-digest:nvr-ui:bootstrap",
+  observedAt: ISSUED_AT,
+});
+
 export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
   productSurface: "constitute-nvr-ui",
+  bootstrapPosture: nvrSurfaceBootstrapPosture,
+  serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
+  serviceManagerProofDigest: nvrServiceManagerProofDigest,
 });
