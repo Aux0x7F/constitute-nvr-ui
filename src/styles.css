@@ -185,7 +185,6 @@ textarea {
 
 .panelHint,
 .notificationBody,
-.kv .k,
 .emptyState p,
 .historyEmptyState p {
   color: var(--muted);
@@ -271,6 +270,41 @@ textarea {
 .cameraStatusDot-connecting { background: var(--warn); }
 .cameraStatusDot-live { background: var(--good); }
 .cameraStatusDot-unavailable { background: var(--bad); }
+
+.cameraStreamStatus {
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.streamStatus {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.streamStatus.warn {
+  color: #fbbf24;
+}
+
+.streamStatusHeader,
+.streamStatusMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.streamStatusHeader strong {
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+.streamStatusMeta span {
+  padding: 2px 6px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+}
 
 .cameraOverlayTop,
 .cameraOverlayBottom {
@@ -376,8 +410,7 @@ textarea {
 .cameraMetaRow,
 .cameraCapabilities,
 .permissionScopeSummary,
-.notificationMeta,
-.kv {
+.notificationMeta {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;

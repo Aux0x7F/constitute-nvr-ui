@@ -23,7 +23,7 @@ const NVR_MAIN_HTML = `
       <div id="cameraGrid" class="cameraGrid">
         <article class="emptyState">
           <strong>No Cameras</strong>
-          <p>Open the app directly or through the gateway once the NVR service is available.</p>
+          <p>Open the app once the NVR service is available.</p>
         </article>
       </div>
     </section>
@@ -91,6 +91,7 @@ export function renderShell(app: HTMLDivElement): NvrShell {
       { id: "settings", label: "Settings" },
     ],
     mainHtml: NVR_MAIN_HTML,
+    accountCenterTitle: "",
   });
 
   return {

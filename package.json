@@ -7,14 +7,15 @@
     "dev": "vite",
     "build": "node ./scripts/build.mjs",
     "preview": "vite preview",
+    "test:source": "node --test tests/**/*.test.js",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
-    "constitute-protocol": "https://github.com/Aux0x7F/constitute-protocol/archive/11eb917d965712d5e2571f2effa5730c7102f317.tar.gz",
-    "constitute-ui": "https://github.com/Aux0x7F/constitute-ui/archive/9e2ced658de91cfc539cbad671971f4303281c03.tar.gz"
+    "constitute-protocol": "github:Aux0x7F/constitute-protocol#codex/swarm-runtime-convergence-protocol",
+    "constitute-ui": "github:Aux0x7F/constitute-ui#codex/swarm-runtime-convergence-ui"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
