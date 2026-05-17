@@ -4,6 +4,7 @@ import { renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
 import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
 import { renderShell } from "./shell";
+import { nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   PLATFORM_RUNTIME_BUILD_ID as RUNTIME_WORKER_BUILD_ID,
   RUNTIME_AUTHORITY_POSTURE_GET,
@@ -37,6 +38,7 @@ import {
   runtimeRouteObservationPosture,
   runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
 } from "../../constitute-ui/src/runtime-stream-session.js";
+import { preparedServiceRegistryServices } from "../../constitute-ui/src/service-registry-model.js";
 import {
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
@@ -1329,6 +1331,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       debug: diagnosticsEnabled,
       debugInfo: runtimeAttachDebugInfo(window.location.origin),
       logPrefix: "nvr-ui",
+      attachContext: nvrSurfaceAttachContext,
       onPort: (port) => {
         runtimePort = port as MessagePort;
         runtimeAttached = false;
@@ -2757,10 +2760,7 @@ function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedA
 }
 
 function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
-  const catalog = snapshot?.serviceCatalog && typeof snapshot.serviceCatalog === "object"
-    ? snapshot.serviceCatalog as Record<string, unknown>
-    : null;
-  const services = Array.isArray(catalog?.services) ? catalog.services : [];
+  const services = preparedServiceRegistryServices((snapshot || {}) as Record<string, unknown>);
   const match = services.find((entry) => {
     if (!entry || typeof entry !== "object") return false;
     return normalizeRole((entry as Record<string, unknown>).service) === "nvr";
