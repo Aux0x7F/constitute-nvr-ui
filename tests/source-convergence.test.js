@@ -245,6 +245,7 @@ test("nvr ui uses shared summary row component instead of a local kv dialect", (
 test("first-party account centers use shared shell state and account-only actions", () => {
   const account = source("constitute-account/app.js");
   const gateway = source("constitute-gateway-ui/src/main.js");
+  const gatewayRuntimeModel = source("constitute-gateway-ui/src/runtime-model.js");
   const logging = source("constitute-logging-ui/src/main.js");
   const nvr = source("constitute-nvr-ui/src/main.ts");
   const all = [account, gateway, logging, nvr].join("\n");
@@ -253,6 +254,10 @@ test("first-party account centers use shared shell state and account-only action
   assert.match(gateway, /deriveRuntimeShellState/);
   assert.match(logging, /deriveRuntimeShellState/);
   assert.match(nvr, /deriveRuntimeShellState/);
+  assert.match(account, /runtimeResourceStatus/);
+  assert.match(gatewayRuntimeModel, /Resource posture/);
+  assert.match(logging, /shellState\.resource\?\.state/);
+  assert.match(nvr, /Runtime Posture/);
   assert.doesNotMatch(all, /Copy Identity ID/);
   assert.doesNotMatch(all, /account\.copy_identity/);
 

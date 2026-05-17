@@ -4002,6 +4002,23 @@ function renderStoragePinIntentSummary(): string {
   `;
 }
 
+function renderRuntimePostureSummary(): string {
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasLiveTiles() });
+  const resource = shellState.resource || {};
+  const retention = shellState.retention || {};
+  return `
+    <section class="nestedPanel runtimePosturePanel">
+      <div class="summaryLabel">Runtime Posture</div>
+      ${renderKeyValueGridMarkup([
+        ["Resource", String(resource.state || "unknown")],
+        ["Cleanup", resource.cleanupAllowed ? "allowed" : String(resource.cleanupReason || "blocked")],
+        ["Retention", String(retention.state || "unknown")],
+        ["Release", retention.releaseRequired ? String(retention.reason || "blocked") : "ready"],
+      ])}
+    </section>
+  `;
+}
+
 function renderHistoryProjectionStatus(): void {
   const pinSummary = renderStoragePinIntentSummary();
   const statusSummary = renderProjectionSyncSummary();
@@ -4074,6 +4091,7 @@ function renderNvrSettingsSummary(): void {
   const accessSummary = nvrAccessSummary();
   const projectionSummary = renderProjectionSyncSummary();
   const storageSummary = renderStoragePinIntentSummary();
+  const runtimePostureSummary = renderRuntimePostureSummary();
   nvrSettingsSummaryEl.innerHTML = `
     <section class="nestedPanel">
       <div class="summaryLabel">Service</div>
@@ -4097,6 +4115,7 @@ function renderNvrSettingsSummary(): void {
     </section>
     ${projectionSummary}
     ${storageSummary}
+    ${runtimePostureSummary}
     ${
       viewerIsOwner()
         ? `<section class="nestedPanel">
