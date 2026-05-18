@@ -8,9 +8,10 @@ import {
 } from "../../constitute-protocol/src/index.js";
 import {
   defineSurfaceAppContract,
-  surfaceAppRunnerPlan,
   surfaceAppBootstrapPosture,
+  surfaceAppInstancePosture,
   surfaceAppRuntimeSelectionPosture,
+  surfaceAppRunnerPlan,
   surfaceServiceManagerOperationPosture,
   surfaceServiceManagerProofDigest,
 } from "../../constitute-ui/src/surface-app-contract.js";
@@ -266,10 +267,21 @@ export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvr
   observedAt: ISSUED_AT,
 });
 
+export const nvrSurfaceAppInstancePosture = surfaceAppInstancePosture(nvrSurfaceApp, {
+  runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
+  runnerPlan: nvrSurfaceRunnerPlan,
+  bootstrapContract: nvrSurfaceBootstrapContract,
+  bootstrapPosture: nvrSurfaceBootstrapPosture,
+  serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
+  serviceManagerProofDigest: nvrServiceManagerProofDigest,
+  issuedAt: ISSUED_AT,
+});
+
 export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
   productSurface: "constitute-nvr-ui",
   runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
   runnerPlan: nvrSurfaceRunnerPlan,
+  appInstancePosture: nvrSurfaceAppInstancePosture,
   bootstrapContract: nvrSurfaceBootstrapContract,
   serviceManagerSecretBoundary: nvrServiceManagerSecretBoundary,
   bootstrapPosture: nvrSurfaceBootstrapPosture,
