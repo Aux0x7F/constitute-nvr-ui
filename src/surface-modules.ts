@@ -31,6 +31,7 @@ import {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
+  shouldReportMediaFulfillmentEvidence,
 } from "./browser-stream-adapter";
 import { createNvrAdminAdapter, normalizeNvrAdminAdapterError } from "./nvr-admin-adapter";
 import {
@@ -83,6 +84,7 @@ export const nvrSurfaceModuleRegistry = createSurfaceModuleRegistry([
       runtimeMediaIceServers,
       runtimeMediaTransportBlockedDetail,
       runtimeMediaTransportContract,
+      shouldReportMediaFulfillmentEvidence,
     },
   },
   {

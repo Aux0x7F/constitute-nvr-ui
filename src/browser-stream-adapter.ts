@@ -22,6 +22,7 @@ export {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
+  shouldReportMediaFulfillmentEvidence,
 } from "../../constitute-ui/src/media-webrtc-adapter.ts";
 
 export type {

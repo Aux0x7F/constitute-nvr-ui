@@ -88,6 +88,7 @@ const {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
+  shouldReportMediaFulfillmentEvidence,
 } = nvrPlatformAdapterModule;
 
 const {
@@ -2094,6 +2095,7 @@ function reportMediaFulfillmentEvidence(evidence: MediaFulfillmentEvidence): voi
   const sessionId = String(evidence.sessionId || "").trim();
   const session = sessionId ? runtimeStreamSessionsBySessionId.get(sessionId) : null;
   if (session) {
+    if (!shouldReportMediaFulfillmentEvidence(session, evidence)) return;
     try {
       const observation = mediaTransportObservationFromFulfillmentEvidence(session, evidence);
       if (observation) reportMediaTransportObservation(observation);
