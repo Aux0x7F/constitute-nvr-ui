@@ -11,7 +11,7 @@ import {
 } from "../../constitute-ui/src/surface-module-registry.js";
 import { SURFACE_APP, SWARM } from "../../constitute-protocol/src/index.js";
 import { renderShell } from "./shell";
-import { nvrSurfaceApp } from "./surface-app-contract.js";
+import { nvrSurfaceApp, nvrSurfaceRuntimeSelectionPosture } from "./surface-app-contract.js";
 import {
   applyBrowserStreamAnswer,
   applyBrowserStreamCandidate,
@@ -100,7 +100,7 @@ export const nvrSurfaceModuleRegistry = createSurfaceModuleRegistry([
 ]);
 
 export function requireNvrSurfaceModuleClaim(role: string, options: { moduleRef: string; primitiveRef?: string }) {
-  const posture = surfaceModuleRegistryPosture(nvrSurfaceModuleRegistry, nvrSurfaceApp, role, options);
+  const posture = surfaceModuleRegistryPosture(nvrSurfaceModuleRegistry, nvrSurfaceRuntimeSelectionPosture, role, options);
   if (posture.state !== "ready" || !posture.claim) {
     throw new Error(`NVR surface module unavailable: ${posture.blockedReason} ${role} ${options.moduleRef}`.trim());
   }
@@ -108,12 +108,12 @@ export function requireNvrSurfaceModuleClaim(role: string, options: { moduleRef:
 }
 
 export function requireNvrSurfaceModuleBinding(role: string, options: { moduleRef: string; primitiveRef?: string }) {
-  return requireSurfaceModuleBinding(nvrSurfaceModuleRegistry, nvrSurfaceApp, role, options);
+  return requireSurfaceModuleBinding(nvrSurfaceModuleRegistry, nvrSurfaceRuntimeSelectionPosture, role, options);
 }
 
 export const nvrSurfaceModuleBindings = surfaceAppModuleBindings(
   nvrSurfaceModuleRegistry,
-  nvrSurfaceApp,
+  nvrSurfaceRuntimeSelectionPosture,
   {
     runtimeClient: {
       role: SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,

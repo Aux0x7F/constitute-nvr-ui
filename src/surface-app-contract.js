@@ -3,12 +3,14 @@ import {
   SWARM,
   assertServiceManagerSecretBoundary,
   assertSurfaceAppBootstrapContract,
+  assertSurfaceAppManifest,
   assertSurfaceAppContract,
 } from "../../constitute-protocol/src/index.js";
 import {
   defineSurfaceAppContract,
   surfaceAppRunnerPlan,
   surfaceAppBootstrapPosture,
+  surfaceAppRuntimeSelectionPosture,
   surfaceServiceManagerOperationPosture,
   surfaceServiceManagerProofDigest,
 } from "../../constitute-ui/src/surface-app-contract.js";
@@ -166,6 +168,76 @@ export const nvrSurfaceApp = defineSurfaceAppContract(nvrSurfaceAppContract, {
   validate: assertSurfaceAppContract,
 });
 
+export const nvrSurfaceAppManifest = assertSurfaceAppManifest({
+  kind: "surface.app.manifest",
+  manifestId: "manifest:nvr-ui",
+  appId: "constitute-nvr-ui",
+  state: SURFACE_APP.MANIFEST_VERSION_STATE.CURRENT,
+  currentAppContractRef: "app:nvr-ui",
+  currentVersion: "0.2.0",
+  defaultSourceMode: SURFACE_APP.FULFILLMENT_MODE.BUNDLED,
+  requiredModuleRoles: [
+    SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,
+    SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL,
+    SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
+    SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
+    SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW,
+  ],
+  bundledSourceRefs: ["bundle:nvr-ui@0.2.0"],
+  compatibilityWindow: {
+    minVersion: "0.2.0",
+    maxVersion: "0.2.x",
+    protocolRef: "protocol:surface-app:v1",
+  },
+  versions: [
+    {
+      appContractRef: "app:nvr-ui",
+      version: "0.2.0",
+      state: SURFACE_APP.MANIFEST_VERSION_STATE.CURRENT,
+      sourceMode: SURFACE_APP.FULFILLMENT_MODE.BUNDLED,
+      requiredModuleRoles: [
+        SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,
+        SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL,
+        SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
+        SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
+        SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW,
+      ],
+      compatibilityWindow: {
+        minVersion: "0.2.0",
+        maxVersion: "0.2.x",
+        protocolRef: "protocol:surface-app:v1",
+      },
+      bundledSourceRefs: ["bundle:nvr-ui@0.2.0"],
+      grantRefs: ["grant:app:nvr-ui:run"],
+      runnerRequirementRefs: ["runner:req:nvr-ui"],
+      serviceManagerRequirementRefs: ["service-manager:req:nvr-ui"],
+      compatibilityRefs: ["protocol:surface-app:v1"],
+      bootstrapContractRef: "bootstrap-contract:app:nvr-ui",
+      releaseContractRef: "release:nvr-ui:local",
+      issuedAt: ISSUED_AT,
+    },
+  ],
+  appContractRefs: ["app:nvr-ui"],
+  grantRefs: ["grant:app:nvr-ui:run"],
+  runnerRequirementRefs: ["runner:req:nvr-ui"],
+  serviceManagerRequirementRefs: ["service-manager:req:nvr-ui"],
+  compatibilityRefs: ["protocol:surface-app:v1"],
+  bootstrapContractRefs: ["bootstrap-contract:app:nvr-ui"],
+  releaseContractRefs: ["release:nvr-ui:local"],
+  authorityRefs: ["authority:nvr-ui:local"],
+  evidenceRefs: ["build:nvr-ui:local"],
+  issuedAt: ISSUED_AT,
+});
+
+export const nvrSurfaceRuntimeSelectionPosture = surfaceAppRuntimeSelectionPosture(
+  nvrSurfaceAppManifest,
+  [nvrSurfaceApp],
+  {
+    runtimeVersion: "0.2.0",
+    issuedAt: ISSUED_AT,
+  },
+);
+
 export const nvrSurfaceRunnerPlan = surfaceAppRunnerPlan(nvrSurfaceApp, {
   issuedAt: ISSUED_AT,
 });
@@ -196,6 +268,7 @@ export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvr
 
 export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
   productSurface: "constitute-nvr-ui",
+  runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
   runnerPlan: nvrSurfaceRunnerPlan,
   bootstrapContract: nvrSurfaceBootstrapContract,
   serviceManagerSecretBoundary: nvrServiceManagerSecretBoundary,
