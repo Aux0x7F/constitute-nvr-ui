@@ -1,7 +1,7 @@
 import "constitute-ui/styles.css";
 import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
-import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
+import { createKeyValueGrid } from "constitute-ui";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   NVR_PREVIEW_SOURCE_LIMIT,
@@ -32,7 +32,13 @@ import {
   runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
 } from "../../constitute-account/runtime-contract.js";
 import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
-import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-ui/src/runtime-shell-state.js";
+import { browserStorageShellContext, deriveRuntimeShellState } from "constitute-ui/runtime-shell-state";
+import {
+  adapterReconnectDelayMs,
+  adapterReconnectJitterMs,
+  adapterReconnectLifecyclePosture,
+  adapterReleaseLifecyclePosture,
+} from "constitute-ui/adapter-lifecycle";
 import {
   applyRuntimeActivationPostureToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
@@ -48,8 +54,8 @@ import {
   runtimeIntentWaitingAuthority,
   runtimeRouteObservationPosture,
   runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
-} from "../../constitute-ui/src/runtime-stream-session.js";
-import { preparedServiceRegistryServices } from "../../constitute-ui/src/service-registry-model.js";
+} from "constitute-ui/runtime-stream-session";
+import { preparedServiceRegistryServices } from "constitute-ui";
 import {
   MEDIA_RENDER_BLOCKED_GRACE_MS,
   MEDIA_RENDER_WAITING_GRACE_MS,
@@ -69,7 +75,7 @@ import {
   streamSessionLifecycleRecordFromCarrier,
   type MediaFulfillmentEvidence,
   type MediaTransportObservation,
-} from "../../constitute-protocol/src/index.js";
+} from "constitute-protocol";
 
 const {
   applyBrowserStreamAnswer,
@@ -4765,9 +4771,12 @@ function cancelStreamLiveWatchdog(): void {
 }
 
 function reconnectDelayMs(attempt: number, baseMs: number, maxMs: number): number {
-  const step = Math.min(5, Math.max(0, attempt - 1));
-  const jitter = Math.floor(Math.random() * Math.min(1_000, baseMs));
-  return Math.min(maxMs, (baseMs * (2 ** step)) + jitter);
+  return adapterReconnectDelayMs(
+    attempt,
+    baseMs,
+    maxMs,
+    adapterReconnectJitterMs(baseMs),
+  );
 }
 
 type RuntimeStreamRecoveryPosture = {
@@ -4783,6 +4792,54 @@ function runtimeStreamRecoveryParentIntentId(context: RuntimeServiceContext | nu
   if (!context) return RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID;
   const sourceKey = runtimePreviewSourceIds(context).join(",");
   return sourceKey ? `${RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID}:${sourceKey}` : RUNTIME_STREAM_RECOVERY_PARENT_INTENT_ID;
+}
+
+function platformAdapterLifecycleRef(): string {
+  return String(nvrPlatformAdapterBindingPosture.implementationRef || nvrSurfaceModules.platformAdapter.moduleRef || "adapter:media-webrtc:browser");
+}
+
+function adapterReconnectLifecycle(
+  reason: string,
+  attempt: number,
+  delayMs: number,
+  context: RuntimeServiceContext | null = runtimeServiceContext,
+): Record<string, unknown> {
+  return adapterReconnectLifecyclePosture({
+    adapterRef: platformAdapterLifecycleRef(),
+    moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
+    surfaceRef: nvrSurfaceApp.surfaceRef || nvrSurfaceApp.contractId,
+    subjectRef: runtimeStreamRecoveryParentIntentId(context),
+    intentRefs: [runtimeStreamRecoveryParentIntentId(context)],
+    sessionRefs: activeRuntimeStreamSessions().map((session) => session.sessionId),
+    releaseRefs: nvrPlatformAdapterBindingPosture.releaseRefs,
+    resourceRefs: nvrPlatformAdapterBindingPosture.materializationBudgetRefs,
+    attempt,
+    delayMs,
+    reason,
+    openResourceCount: activeRuntimeStreamSessions().length,
+    safeFacts: {
+      sourceCount: context ? runtimePreviewSourceIds(context).length : 0,
+      adapterRole: nvrPlatformAdapterBindingPosture.role,
+    },
+  });
+}
+
+function adapterReleaseLifecycle(session: RuntimeStreamSession, reasonCode: string): Record<string, unknown> {
+  return adapterReleaseLifecyclePosture({
+    adapterRef: session.adapterModuleRef || platformAdapterLifecycleRef(),
+    moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
+    surfaceRef: nvrSurfaceApp.surfaceRef || nvrSurfaceApp.contractId,
+    subjectRef: session.sessionId,
+    sessionRefs: [session.sessionId],
+    releaseRefs: session.releaseRefs.length ? session.releaseRefs : nvrPlatformAdapterBindingPosture.releaseRefs,
+    resourceRefs: nvrPlatformAdapterBindingPosture.materializationBudgetRefs,
+    safeFacts: {
+      reasonCode,
+      sourceRef: session.sourceId,
+      iceConnectionState: session.iceConnectionState,
+      connectionState: session.connectionState,
+    },
+  });
 }
 
 async function runtimeStreamRecoveryPosture(
@@ -4806,6 +4863,7 @@ async function runtimeStreamRecoveryPosture(
         fallbackDelayMs,
         sourceIds: runtimePreviewSourceIds(context),
         sessionCount: activeRuntimeStreamSessions().length,
+        adapterLifecycle: adapterReconnectLifecycle(reason, attempt, fallbackDelayMs, context),
       },
     }, RUNTIME_WRITE_TIMEOUT_MS);
     return (posture && typeof posture === "object") ? posture : { state: "localFallback", attempt, delayMs: fallbackDelayMs, reason };
@@ -5133,6 +5191,7 @@ function publishRuntimeStreamSessionClose(session: RuntimeStreamSession, reasonC
     sessionId: session.sessionId,
     sourceId: session.sourceId,
     reasonCode,
+    adapterLifecycle: adapterReleaseLifecycle(session, reasonCode),
   }).catch((error) => {
     appendLog(`queued stream close failed: ${String((error as Error)?.message || error)}`);
   });

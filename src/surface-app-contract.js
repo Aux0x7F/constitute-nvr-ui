@@ -3,11 +3,11 @@ import {
   SWARM,
   assertSurfaceAppManifest,
   assertSurfaceAppContract,
-} from "../../constitute-protocol/src/index.js";
+} from "constitute-protocol";
 import {
   defineSurfaceAppContract,
-} from "../../constitute-ui/src/surface-app-contract.js";
-import { surfaceAppSelectionReadModel } from "../../constitute-ui/src/surface-selection-read-model.js";
+} from "constitute-ui/surface-app-contract";
+import { surfaceAppSelectionReadModel } from "constitute-ui/surface-selection-read-model";
 
 const ISSUED_AT = 1700000000;
 

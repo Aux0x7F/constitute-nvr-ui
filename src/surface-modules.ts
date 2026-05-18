@@ -1,8 +1,8 @@
-import { createRuntimeSurfaceClient } from "../../constitute-ui/src/runtime-surface-client.js";
+import { createRuntimeSurfaceClient } from "constitute-ui/runtime-surface-client";
 import {
   materializationBudgetLimit,
   requireSurfaceMaterializationBudget,
-} from "../../constitute-ui/src/surface-app-contract.js";
+} from "constitute-ui/surface-app-contract";
 import {
   createSurfaceModuleRegistry,
   requireSurfaceModuleBinding,
@@ -10,8 +10,8 @@ import {
   surfacePlatformAdapterBindingPosture,
   surfaceServiceSurfaceAdapterBindingPosture,
   surfaceModuleRegistryPosture,
-} from "../../constitute-ui/src/surface-module-registry.js";
-import { SURFACE_APP, SWARM } from "../../constitute-protocol/src/index.js";
+} from "constitute-ui/surface-module-registry";
+import { SURFACE_APP, SWARM } from "constitute-protocol";
 import { renderShell } from "./shell";
 import { nvrSurfaceApp, nvrSurfaceRuntimeSelectionPosture } from "./surface-app-contract.js";
 import {

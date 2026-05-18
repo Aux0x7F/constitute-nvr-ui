@@ -24,7 +24,7 @@ export {
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
   shouldReportMediaFulfillmentEvidence,
-} from "../../constitute-ui/src/media-webrtc-adapter.ts";
+} from "constitute-ui/media-webrtc-adapter";
 
 export type {
   BrowserStreamAdapterOptions,
@@ -35,4 +35,4 @@ export type {
   MediaWebRtcAdapterBindingProfile,
   RuntimeMediaTransportProfile,
   SurfaceAdapterBindingPosture,
-} from "../../constitute-ui/src/media-webrtc-adapter.ts";
+} from "constitute-ui/media-webrtc-adapter";
