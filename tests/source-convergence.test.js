@@ -87,6 +87,12 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /runtimeStreamRecoveryPosture/);
   assert.match(main, /resetRuntimeStreamRecovery/);
   assert.match(main, /runtimeStreamRecoveryParentIntentId/);
+  assert.match(main, /constitute-ui\/adapter-lifecycle/);
+  assert.match(main, /adapterReconnectLifecyclePosture/);
+  assert.match(main, /adapterReleaseLifecyclePosture/);
+  assert.match(main, /adapterLifecycle: adapterReconnectLifecycle/);
+  assert.match(main, /adapterLifecycle: adapterReleaseLifecycle/);
+  assert.doesNotMatch(main, /Math\.random\(\) \* Math\.min\(1_000, baseMs\)/);
   assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
   assert.match(streamSession, /memberWritten/);
