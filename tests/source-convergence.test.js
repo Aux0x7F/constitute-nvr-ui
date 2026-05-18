@@ -171,6 +171,7 @@ test("nvr ui declares a surface app contract", async () => {
     nvrSurfaceBootstrapContract,
     nvrSurfaceBootstrapPosture,
     nvrSurfaceRunnerPlan,
+    nvrSurfaceSelectionReadModel,
   } = await import("../src/surface-app-contract.js");
   assert.equal(nvrSurfaceApp.posture.state, "ready");
   assert.equal(nvrSurfaceApp.hasRole("runtimeClient"), true);
@@ -178,6 +179,8 @@ test("nvr ui declares a surface app contract", async () => {
   assert.equal(nvrSurfaceApp.hasRole("platformAdapter"), true);
   assert.equal(nvrSurfaceApp.hasRole("serviceSurfaceAdapter"), true);
   assert.equal(nvrSurfaceApp.hasRole("productView"), true);
+  assert.equal(nvrSurfaceSelectionReadModel.kind, "surface.app.selection.readModel");
+  assert.equal(nvrSurfaceSelectionReadModel.state, "ready");
   assert.equal(nvrSurfaceRuntimeSelectionPosture.kind, "surface.app.runtime.selection.posture");
   assert.equal(nvrSurfaceRuntimeSelectionPosture.state, "ready");
   assert.equal(nvrSurfaceAttachContext.kind, "surface.app.attachContext");
@@ -196,6 +199,7 @@ test("nvr ui declares a surface app contract", async () => {
   assert.equal(nvrServiceManagerOperationPosture.state, "requested");
   assert.equal(nvrServiceManagerProofDigest.kind, "service.manager.proof.digest");
   assert.equal(nvrSurfaceAttachContext.runtimeSelectionPosture, nvrSurfaceRuntimeSelectionPosture);
+  assert.equal(nvrSurfaceSelectionReadModel.attachContext, nvrSurfaceAttachContext);
   assert.equal(nvrSurfaceAttachContext.appInstancePosture, nvrSurfaceAppInstancePosture);
   assert.equal(nvrSurfaceAttachContext.runnerPlan, nvrSurfaceRunnerPlan);
   assert.equal(nvrSurfaceAttachContext.bootstrapContract, nvrSurfaceBootstrapContract);

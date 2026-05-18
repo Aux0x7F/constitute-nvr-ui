@@ -1,23 +1,13 @@
 import {
   SURFACE_APP,
   SWARM,
-  assertServiceManagerSecretBoundary,
-  assertSurfaceAppBootstrapContract,
-  assertSurfaceAppInstancePosture,
   assertSurfaceAppManifest,
-  assertSurfaceAppRuntimeSelectionPosture,
   assertSurfaceAppContract,
-  assertSurfaceAppRunnerPlan,
 } from "../../constitute-protocol/src/index.js";
 import {
   defineSurfaceAppContract,
-  surfaceAppBootstrapPosture,
-  surfaceAppInstancePosture,
-  surfaceAppRuntimeSelectionPosture,
-  surfaceAppRunnerPlan,
-  surfaceServiceManagerOperationPosture,
-  surfaceServiceManagerProofDigest,
 } from "../../constitute-ui/src/surface-app-contract.js";
+import { surfaceAppSelectionReadModel } from "../../constitute-ui/src/surface-selection-read-model.js";
 
 const ISSUED_AT = 1700000000;
 
@@ -233,61 +223,30 @@ export const nvrSurfaceAppManifest = assertSurfaceAppManifest({
   issuedAt: ISSUED_AT,
 });
 
-export const nvrSurfaceRuntimeSelectionPosture = assertSurfaceAppRuntimeSelectionPosture(surfaceAppRuntimeSelectionPosture(
-  nvrSurfaceAppManifest,
-  [nvrSurfaceApp],
-  {
-    runtimeVersion: "0.2.0",
-    issuedAt: ISSUED_AT,
-  },
-));
-
-export const nvrSurfaceRunnerPlan = assertSurfaceAppRunnerPlan(surfaceAppRunnerPlan(nvrSurfaceApp, {
-  issuedAt: ISSUED_AT,
-}));
-
-export const nvrServiceManagerSecretBoundary = assertServiceManagerSecretBoundary(
-  nvrSurfaceRunnerPlan.secretBoundary,
-);
-
-export const nvrSurfaceBootstrapContract = assertSurfaceAppBootstrapContract(
-  nvrSurfaceRunnerPlan.bootstrapContract,
-);
-
-export const nvrSurfaceBootstrapPosture = surfaceAppBootstrapPosture(nvrSurfaceApp, {
-  issuedAt: ISSUED_AT,
-});
-
-export const nvrServiceManagerOperationPosture = surfaceServiceManagerOperationPosture(nvrSurfaceApp, {
-  operation: SURFACE_APP.SERVICE_MANAGER_OPERATION.HEALTH_CHECK,
-  operationId: "operation:nvr-ui:bootstrap-health",
-  requestedAt: ISSUED_AT,
-});
-
-export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvrSurfaceApp, {
-  operationPosture: nvrServiceManagerOperationPosture,
-  digestId: "proof-digest:nvr-ui:bootstrap",
-  observedAt: ISSUED_AT,
-});
-
-export const nvrSurfaceAppInstancePosture = assertSurfaceAppInstancePosture(surfaceAppInstancePosture(nvrSurfaceApp, {
-  runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
-  runnerPlan: nvrSurfaceRunnerPlan,
-  bootstrapContract: nvrSurfaceBootstrapContract,
-  bootstrapPosture: nvrSurfaceBootstrapPosture,
-  serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
-  serviceManagerProofDigest: nvrServiceManagerProofDigest,
-  issuedAt: ISSUED_AT,
-}));
-
-export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
+export const nvrSurfaceSelectionReadModel = surfaceAppSelectionReadModel({
+  surfaceApp: nvrSurfaceApp,
+  manifest: nvrSurfaceAppManifest,
   productSurface: "constitute-nvr-ui",
-  runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
-  runnerPlan: nvrSurfaceRunnerPlan,
-  appInstancePosture: nvrSurfaceAppInstancePosture,
-  bootstrapContract: nvrSurfaceBootstrapContract,
-  serviceManagerSecretBoundary: nvrServiceManagerSecretBoundary,
-  bootstrapPosture: nvrSurfaceBootstrapPosture,
-  serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
-  serviceManagerProofDigest: nvrServiceManagerProofDigest,
+  runtimeVersion: "0.2.0",
+  issuedAt: ISSUED_AT,
+  serviceManagerOperationOptions: {
+    operation: SURFACE_APP.SERVICE_MANAGER_OPERATION.HEALTH_CHECK,
+    operationId: "operation:nvr-ui:bootstrap-health",
+    requestedAt: ISSUED_AT,
+  },
+  serviceManagerProofDigestOptions: {
+    digestId: "proof-digest:nvr-ui:bootstrap",
+    observedAt: ISSUED_AT,
+  },
 });
+
+export const nvrSurfaceRuntimeSelectionPosture = nvrSurfaceSelectionReadModel.runtimeSelectionPosture;
+export const nvrSurfaceRunnerPlan = nvrSurfaceSelectionReadModel.runnerPlan;
+export const nvrServiceManagerSecretBoundary = nvrSurfaceSelectionReadModel.serviceManagerSecretBoundary;
+export const nvrSurfaceBootstrapContract = nvrSurfaceSelectionReadModel.bootstrapContract;
+export const nvrSurfaceBootstrapPosture = nvrSurfaceSelectionReadModel.bootstrapPosture;
+export const nvrServiceManagerOperationPosture = nvrSurfaceSelectionReadModel.serviceManagerOperationPosture;
+export const nvrServiceManagerProofDigest = nvrSurfaceSelectionReadModel.serviceManagerProofDigest;
+export const nvrSurfaceAppInstancePosture = nvrSurfaceSelectionReadModel.appInstancePosture;
+
+export const nvrSurfaceAttachContext = nvrSurfaceSelectionReadModel.attachContext;
