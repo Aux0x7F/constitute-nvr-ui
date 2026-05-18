@@ -157,7 +157,13 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
 });
 
 test("nvr ui declares a surface app contract", async () => {
-  const { nvrSurfaceApp, nvrSurfaceAttachContext } = await import("../src/surface-app-contract.js");
+  const {
+    nvrServiceManagerOperationPosture,
+    nvrServiceManagerProofDigest,
+    nvrSurfaceApp,
+    nvrSurfaceAttachContext,
+    nvrSurfaceBootstrapPosture,
+  } = await import("../src/surface-app-contract.js");
   assert.equal(nvrSurfaceApp.posture.state, "ready");
   assert.equal(nvrSurfaceApp.hasRole("runtimeClient"), true);
   assert.equal(nvrSurfaceApp.hasRole("projectionModel"), true);
@@ -166,6 +172,11 @@ test("nvr ui declares a surface app contract", async () => {
   assert.equal(nvrSurfaceApp.hasRole("productView"), true);
   assert.equal(nvrSurfaceAttachContext.kind, "surface.app.attachContext");
   assert.equal(nvrSurfaceAttachContext.appId, "constitute-nvr-ui");
+  assert.equal(nvrSurfaceBootstrapPosture.state, "ready");
+  assert.equal(nvrServiceManagerOperationPosture.kind, "service.manager.operation.posture");
+  assert.equal(nvrServiceManagerOperationPosture.state, "requested");
+  assert.equal(nvrServiceManagerProofDigest.kind, "service.manager.proof.digest");
+  assert.equal(nvrSurfaceAttachContext.serviceManagerOperationPosture, nvrServiceManagerOperationPosture);
 });
 
 test("nvr service administration uses a service-surface adapter boundary", () => {
