@@ -1,7 +1,7 @@
 import "constitute-ui/styles.css";
 import "./styles.css";
 import { renderActionList, setConnectionStateText } from "constitute-ui";
-import { createKeyValueGrid } from "../../constitute-ui/src/index.js";
+import { createKeyValueGrid } from "constitute-ui";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
   NVR_PREVIEW_SOURCE_LIMIT,
@@ -32,7 +32,7 @@ import {
   runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
 } from "../../constitute-account/runtime-contract.js";
 import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
-import { browserStorageShellContext, deriveRuntimeShellState } from "../../constitute-ui/src/runtime-shell-state.js";
+import { browserStorageShellContext, deriveRuntimeShellState } from "constitute-ui/runtime-shell-state";
 import {
   applyRuntimeActivationPostureToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
@@ -48,8 +48,8 @@ import {
   runtimeIntentWaitingAuthority,
   runtimeRouteObservationPosture,
   runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
-} from "../../constitute-ui/src/runtime-stream-session.js";
-import { preparedServiceRegistryServices } from "../../constitute-ui/src/service-registry-model.js";
+} from "constitute-ui/runtime-stream-session";
+import { preparedServiceRegistryServices } from "constitute-ui";
 import {
   MEDIA_RENDER_BLOCKED_GRACE_MS,
   MEDIA_RENDER_WAITING_GRACE_MS,
@@ -69,7 +69,7 @@ import {
   streamSessionLifecycleRecordFromCarrier,
   type MediaFulfillmentEvidence,
   type MediaTransportObservation,
-} from "../../constitute-protocol/src/index.js";
+} from "constitute-protocol";
 
 const {
   applyBrowserStreamAnswer,

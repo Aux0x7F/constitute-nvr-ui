@@ -3,7 +3,7 @@ import {
   normalizeServiceSurfaceAdapterError,
   serviceSurfaceActionTimeoutMs,
   type ServiceSurfaceAdapterPosture,
-} from "../../constitute-ui/src/service-surface-adapter.js";
+} from "constitute-ui/service-surface-adapter";
 
 export type NvrAdminAdapterPayload = Record<string, unknown>;
 export type NvrAdminAdapterResult = Record<string, unknown>;

@@ -29,7 +29,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(runtimeContract, /RUNTIME_STREAM_RECOVERY_REQUEST = "runtime\.stream\.recovery\.request"/);
   assert.match(main, /publishRuntimeStreamIntent/);
   assert.match(main, /preparedStreamStatus/);
-  assert.match(main, /runtime-stream-session\.js/);
+  assert.match(main, /constitute-ui\/runtime-stream-session/);
   assert.match(main, /streamSessionLifecycleRecordFromCarrier/);
   assert.match(main, /STREAM_SESSION_LIFECYCLE_PHASE/);
   assert.doesNotMatch(main, /recordKind\.endsWith\("\.(admission|reject|answer|candidate|health)"\)/);
@@ -51,7 +51,8 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.doesNotMatch(main, /pc\.createOffer/);
   assert.doesNotMatch(main, /pc\.onicecandidate/);
   assert.doesNotMatch(nvrAdapter, /new RTCPeerConnection/);
-  assert.match(nvrAdapter, /constitute-ui\/src\/media-webrtc-adapter/);
+  assert.match(nvrAdapter, /constitute-ui\/media-webrtc-adapter/);
+  assert.doesNotMatch(nvrAdapter, /constitute-ui\/src\/media-webrtc-adapter/);
   assert.match(adapter, /new RTCPeerConnection/);
   assert.match(adapter, /createBrowserStreamOffer/);
   assert.match(adapter, /adapter:media-webrtc:browser/);
@@ -123,8 +124,10 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   assert.match(modules, /surfaceAppModuleBindings/);
   assert.match(modules, /surfaceModuleRegistryPosture/);
   assert.match(modules, /requireSurfaceModuleBinding/);
-  assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
-  assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/surface-module-registry\.js"/);
+  assert.match(modules, /from "constitute-ui\/runtime-surface-client"/);
+  assert.match(modules, /from "constitute-ui\/surface-module-registry"/);
+  assert.doesNotMatch(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
+  assert.doesNotMatch(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/surface-module-registry\.js"/);
   assert.match(main, /from "\.\/surface-app-contract\.js"/);
   assert.match(main, /from "\.\/surface-modules"/);
   assert.match(main, /nvrSurfaceModules/);
