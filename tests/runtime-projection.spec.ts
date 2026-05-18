@@ -12,11 +12,13 @@ type RuntimeHarnessOptions = {
   authorityPostures?: Array<Record<string, unknown>>;
   earlyStreamAnswer?: boolean | "frameAfterResponse";
   edgeZoneScope?: Record<string, unknown> | null;
+  edgeConnected?: boolean;
   includeNvrService?: boolean;
   delayedServiceAfterSnapshotGets?: number;
   localAccountCacheFallback?: boolean;
   localAccountCacheSources?: boolean;
   pendingStreamRoute?: boolean;
+  edgeAttachAuthorityWait?: boolean;
   adapterIceFailureAfterAnswer?: boolean;
   mediaTransportProfileUnsupported?: boolean;
 };
@@ -40,6 +42,7 @@ function runtimeSnapshot({
   hostedFacts,
   hostedCameraCount = 2,
   edgeZoneScope = { zoneId: "zone-a", privacy: "rawIds", ttl: 30, maxHops: 2 },
+  edgeConnected = true,
   includeNvrService = true,
 }: RuntimeHarnessOptions = {}) {
   const hasNvrService = linked && includeNvrService;
@@ -125,7 +128,8 @@ function runtimeSnapshot({
       },
     },
     edge: {
-      connected: true,
+      connected: edgeConnected,
+      mode: edgeConnected ? "live" : "pendingAuthority",
       zoneScope: edgeZoneScope,
     },
     managedAppliances: linked ? {
@@ -180,7 +184,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
   const delayedSnapshot = options.delayedServiceAfterSnapshotGets
     ? runtimeSnapshot({ ...options, includeNvrService: true })
     : null;
-  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheSources, pendingStreamRoute, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
+  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheSources, pendingStreamRoute, edgeAttachAuthorityWait, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
     if (localAccountCacheFallback) {
       const ts = Date.now();
       const includeSources = localAccountCacheSources !== false;
@@ -255,6 +259,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
       remoteDescriptions: 0,
       adapterFailures: 0,
       edgeAttaches: [] as Array<Record<string, unknown>>,
+      edgeAttachAuthorityWaitReleased: false,
       authorityPostures: Array.isArray(authorityPostures) ? authorityPostures.slice() : [],
       peerConnections: 0,
       closedPeerConnections: 0,
@@ -386,6 +391,11 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
         }
         if (type === "swarm.edge.attach") {
           state.edgeAttaches.push(message.payload as Record<string, unknown>);
+          if (edgeAttachAuthorityWait && !state.edgeAttachAuthorityWaitReleased) {
+            state.edgeAttachAuthorityWaitReleased = true;
+            this.reject(message, "runtime authority waitingAuthority: missingRuntimeAuthorityMemberRef");
+            return;
+          }
           this.respond(message, { ok: true });
           return;
         }
@@ -493,6 +503,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
     localAccountCacheSources: options.localAccountCacheSources !== false,
     authorityPostures: options.authorityPostures || [],
     pendingStreamRoute: options.pendingStreamRoute === true,
+    edgeAttachAuthorityWait: options.edgeAttachAuthorityWait === true,
     adapterIceFailureAfterAnswer: options.adapterIceFailureAfterAnswer === true,
     mediaTransportProfileUnsupported: options.mediaTransportProfileUnsupported === true,
     browserPk: BROWSER_PK,
@@ -607,6 +618,38 @@ test("direct entry waits for runtime authority before creating stream adapters",
     return probe?.peerConnections || 0;
   });
   expect(peerConnections).toBeGreaterThan(0);
+});
+
+test("direct entry retries runtime-owned edge attach after authority posture resolves", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    edgeConnected: false,
+    edgeAttachAuthorityWait: true,
+    localAccountCacheFallback: true,
+    authorityPostures: [
+      { state: "waitingAuthority", ready: false, blockedAuthorityDomain: "runtime", reason: "runtime device key is hydrating" },
+      { state: "ready", ready: true, devicePk: BROWSER_PK },
+    ],
+  });
+
+  await page.goto("/");
+
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: {
+      edgeAttaches: Array<Record<string, unknown>>;
+      intents: Array<Record<string, unknown>>;
+    } }).__runtimeProbe;
+    return {
+      edgeAttachCount: probe?.edgeAttaches.length || 0,
+      streamOpenCount: probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0,
+      firstMemberRef: (probe?.edgeAttaches[0] as Record<string, unknown> | undefined)?.memberRef,
+      secondMemberRef: (probe?.edgeAttaches[1] as Record<string, unknown> | undefined)?.memberRef,
+    };
+  }), { timeout: 8_000 }).toEqual({
+    edgeAttachCount: 2,
+    streamOpenCount: 2,
+    firstMemberRef: undefined,
+    secondMemberRef: undefined,
+  });
 });
 
 test("direct entry materializes gateway-hosted camera facts before projection repair", async ({ page }) => {

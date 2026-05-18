@@ -74,6 +74,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /export function runtimeMediaTransportBlockedDetail/);
   assert.match(adapter, /export function isRuntimeMediaTransportProfileFailure/);
   assert.match(main, /moduleRef: nvrSurfaceModules\.platformAdapter\.moduleRef/);
+  assert.match(main, /adapterBindingPosture: nvrPlatformAdapterBindingPosture/);
   assert.doesNotMatch(main, /function runtimeMediaIceServers/);
   assert.doesNotMatch(main, /function runtimeMediaIceServerUrls/);
   assert.doesNotMatch(main, /function runtimeMediaTransportContract/);
@@ -119,16 +120,21 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
 
   assert.match(modules, /createRuntimeSurfaceClient/);
   assert.match(modules, /createSurfaceModuleRegistry/);
+  assert.match(modules, /surfaceAppModuleBindings/);
   assert.match(modules, /surfaceModuleRegistryPosture/);
+  assert.match(modules, /requireSurfaceModuleBinding/);
   assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/runtime-surface-client\.js"/);
   assert.match(modules, /from "\.\.\/\.\.\/constitute-ui\/src\/surface-module-registry\.js"/);
   assert.match(main, /from "\.\/surface-app-contract\.js"/);
   assert.match(main, /from "\.\/surface-modules"/);
   assert.match(main, /nvrSurfaceModules/);
   assert.match(modules, /nvrSurfaceModuleRegistry/);
+  assert.match(modules, /nvrSurfaceModuleBindings/);
   assert.match(modules, /requireNvrSurfaceModuleClaim/);
   assert.match(modules, /requireNvrSurfaceModuleBinding/);
-  assert.match(modules, /const implementation = posture\.implementation\?\.implementation/);
+  assert.match(modules, /nvrSurfaceModuleBindings\.byKey\.platformAdapter/);
+  assert.match(modules, /nvrPlatformAdapterBindingPosture/);
+  assert.match(modules, /nvrServiceSurfaceAdapterBindingPosture/);
   assert.match(main, /activeRuntimeClientModuleRef/);
   assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
@@ -162,10 +168,13 @@ test("nvr ui declares a surface app contract", async () => {
     nvrServiceManagerProofDigest,
     nvrServiceManagerSecretBoundary,
     nvrSurfaceApp,
+    nvrSurfaceAppInstancePosture,
+    nvrSurfaceRuntimeSelectionPosture,
     nvrSurfaceAttachContext,
     nvrSurfaceBootstrapContract,
     nvrSurfaceBootstrapPosture,
     nvrSurfaceRunnerPlan,
+    nvrSurfaceSelectionReadModel,
   } = await import("../src/surface-app-contract.js");
   assert.equal(nvrSurfaceApp.posture.state, "ready");
   assert.equal(nvrSurfaceApp.hasRole("runtimeClient"), true);
@@ -173,8 +182,15 @@ test("nvr ui declares a surface app contract", async () => {
   assert.equal(nvrSurfaceApp.hasRole("platformAdapter"), true);
   assert.equal(nvrSurfaceApp.hasRole("serviceSurfaceAdapter"), true);
   assert.equal(nvrSurfaceApp.hasRole("productView"), true);
+  assert.equal(nvrSurfaceSelectionReadModel.kind, "surface.app.selection.readModel");
+  assert.equal(nvrSurfaceSelectionReadModel.state, "ready");
+  assert.equal(nvrSurfaceRuntimeSelectionPosture.kind, "surface.app.runtime.selection.posture");
+  assert.equal(nvrSurfaceRuntimeSelectionPosture.state, "ready");
   assert.equal(nvrSurfaceAttachContext.kind, "surface.app.attachContext");
   assert.equal(nvrSurfaceAttachContext.appId, "constitute-nvr-ui");
+  assert.equal(nvrSurfaceAppInstancePosture.kind, "surface.app.instance.posture");
+  assert.equal(nvrSurfaceAppInstancePosture.state, "ready");
+  assert.equal(nvrSurfaceAppInstancePosture.appId, "constitute-nvr-ui");
   assert.equal(nvrSurfaceBootstrapPosture.state, "ready");
   assert.equal(nvrSurfaceRunnerPlan.kind, "surface.app.runner.plan");
   assert.equal(nvrSurfaceRunnerPlan.state, "ready");
@@ -185,6 +201,9 @@ test("nvr ui declares a surface app contract", async () => {
   assert.equal(nvrServiceManagerOperationPosture.kind, "service.manager.operation.posture");
   assert.equal(nvrServiceManagerOperationPosture.state, "requested");
   assert.equal(nvrServiceManagerProofDigest.kind, "service.manager.proof.digest");
+  assert.equal(nvrSurfaceAttachContext.runtimeSelectionPosture, nvrSurfaceRuntimeSelectionPosture);
+  assert.equal(nvrSurfaceSelectionReadModel.attachContext, nvrSurfaceAttachContext);
+  assert.equal(nvrSurfaceAttachContext.appInstancePosture, nvrSurfaceAppInstancePosture);
   assert.equal(nvrSurfaceAttachContext.runnerPlan, nvrSurfaceRunnerPlan);
   assert.equal(nvrSurfaceAttachContext.bootstrapContract, nvrSurfaceBootstrapContract);
   assert.equal(nvrSurfaceAttachContext.serviceManagerOperationPosture, nvrServiceManagerOperationPosture);
@@ -209,9 +228,11 @@ test("nvr service administration uses a service-surface adapter boundary", () =>
   assert.match(adminAdapter, /export function createNvrAdminAdapter/);
   assert.match(adminAdapter, /export function normalizeNvrAdminAdapterError/);
   assert.match(adminAdapter, /export function nvrAdminActionTimeoutMs/);
-  assert.match(adminAdapter, /moduleRef: String\(options\.moduleRef \|\| ""\)/);
+  assert.match(adminAdapter, /createServiceSurfaceAdapter/);
+  assert.match(adminAdapter, /serviceSurfaceActionTimeoutMs/);
   assert.match(main, /moduleRef: nvrSurfaceModules\.serviceSurfaceAdapter\.moduleRef/);
-  assert.match(adminAdapter, /action === "apply_camera_device_config"/);
+  assert.match(main, /bindingPosture: nvrServiceSurfaceAdapterBindingPosture/);
+  assert.match(adminAdapter, /apply_camera_device_config: options\.applyCameraDeviceConfigTimeoutMs/);
   assert.match(adminAdapter, /Gateway update required before camera administration is available/);
   assert.match(adminAdapter, /Owner runtime access is required before camera administration is available/);
 });

@@ -6,10 +6,12 @@ import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.j
 import {
   NVR_PREVIEW_SOURCE_LIMIT,
   NVR_STREAM_EVENT_LIMIT,
+  nvrPlatformAdapterBindingPosture,
   nvrPlatformAdapterModule,
   nvrProductViewModule,
   nvrProjectionModelModule,
   nvrRuntimeClientModule,
+  nvrServiceSurfaceAdapterBindingPosture,
   nvrServiceSurfaceAdapterModule,
   nvrSurfaceBudgets,
   nvrSurfaceModules,
@@ -88,6 +90,7 @@ const {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
+  shouldReportMediaFulfillmentEvidence,
 } = nvrPlatformAdapterModule;
 
 const {
@@ -1386,6 +1389,10 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       onConsumerFloor: (floor) => {
         runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
       },
+      onAttachPosture: (posture: Record<string, unknown>) => {
+        if (!posture || posture.severity === "info") return;
+        appendLog(`runtime attach ${String(posture.state || "degraded")}`);
+      },
       onAttachTimeout: () => {
         runtimeAttached = false;
         appendLog("runtime attach unavailable");
@@ -1454,6 +1461,12 @@ function runtimeAuthorityBlockedDetail(posture: RuntimeAuthorityPosture | null |
   const reason = String(posture?.reason || "").trim();
   const domain = String(posture?.blockedAuthorityDomain || "runtime").trim();
   return reason || `Runtime authority is ${state} for ${domain}.`;
+}
+
+function isRuntimeSwarmEdgeAuthorityWait(error: unknown): boolean {
+  const detail = String((error as Error)?.message || error || "").toLowerCase();
+  return detail.includes("missingruntimeauthoritymemberref")
+    || (detail.includes("runtime authority") && detail.includes("waitingauthority"));
 }
 
 function markRuntimeAuthorityWaiting(posture: RuntimeAuthorityPosture | null | undefined): void {
@@ -2002,6 +2015,12 @@ async function ensureRuntimeSwarmEdgeForContext(
       appendLog(`runtime swarm edge attach requested for ${edgeEndpoint}`);
       return true;
     } catch (error) {
+      if (isRuntimeSwarmEdgeAuthorityWait(error)) {
+        swarmEdgeAttachRepairFailureCount = 0;
+        swarmEdgeAttachRepairBackoffUntil = 0;
+        scheduleRuntimeAuthorityReconnect(String((error as Error)?.message || error));
+        return false;
+      }
       swarmEdgeAttachRepairFailureCount += 1;
       swarmEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
         RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS,
@@ -2078,6 +2097,7 @@ function reportMediaFulfillmentEvidence(evidence: MediaFulfillmentEvidence): voi
   const sessionId = String(evidence.sessionId || "").trim();
   const session = sessionId ? runtimeStreamSessionsBySessionId.get(sessionId) : null;
   if (session) {
+    if (!shouldReportMediaFulfillmentEvidence(session, evidence)) return;
     try {
       const observation = mediaTransportObservationFromFulfillmentEvidence(session, evidence);
       if (observation) reportMediaTransportObservation(observation);
@@ -2268,6 +2288,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       sessionId: expectedSessionId,
       nonce,
       moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
+      adapterBindingPosture: nvrPlatformAdapterBindingPosture,
       iceServers: mediaIceServers,
       onCandidate: (candidate) => {
         if (!streamOpenQueued) return;
@@ -2500,6 +2521,7 @@ function adminProjectionFallback(action: string, payload: Record<string, unknown
 
 const nvrAdminAdapter = createNvrAdminAdapter({
   moduleRef: nvrSurfaceModules.serviceSurfaceAdapter.moduleRef,
+  bindingPosture: nvrServiceSurfaceAdapterBindingPosture,
   defaultTimeoutMs: ADMIN_INTENT_TIMEOUT_MS,
   applyCameraDeviceConfigTimeoutMs: CAMERA_APPLY_REQUEST_TIMEOUT_MS,
   publishRuntimeServiceIntent,
@@ -4662,6 +4684,25 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
     closePeerConnection();
     markRuntimeAuthorityWaiting(authority);
     scheduleRuntimeAuthorityReconnect(runtimeAuthorityBlockedDetail(authority));
+    return;
+  }
+
+  const needsEdgeAttach = runtimeSnapshot?.edge?.connected !== true || runtimeSnapshot?.edge?.mode === "pendingAuthority";
+  const edgeAttached = needsEdgeAttach
+    ? await ensureRuntimeSwarmEdgeForContext(context, { force: true }).catch((error) => {
+      const detail = String((error as Error)?.message || error);
+      if (isRuntimeSwarmEdgeAuthorityWait(error)) {
+        appendLog(`runtime swarm edge waiting for authority: ${detail}`);
+        scheduleRuntimeAuthorityReconnect(detail);
+        return false;
+      }
+      appendLog(`runtime swarm edge attach unavailable: ${detail}`);
+      return false;
+    })
+    : true;
+  if (!edgeAttached && runtimeSnapshot?.edge?.mode === "pendingAuthority") {
+    markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: "Runtime authority is required before swarm edge attach." });
+    scheduleRuntimeAuthorityReconnect("runtime edge attach is waiting for authority");
     return;
   }
 

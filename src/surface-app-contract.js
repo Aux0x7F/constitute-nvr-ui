@@ -1,17 +1,13 @@
 import {
   SURFACE_APP,
   SWARM,
-  assertServiceManagerSecretBoundary,
-  assertSurfaceAppBootstrapContract,
+  assertSurfaceAppManifest,
   assertSurfaceAppContract,
 } from "../../constitute-protocol/src/index.js";
 import {
   defineSurfaceAppContract,
-  surfaceAppRunnerPlan,
-  surfaceAppBootstrapPosture,
-  surfaceServiceManagerOperationPosture,
-  surfaceServiceManagerProofDigest,
 } from "../../constitute-ui/src/surface-app-contract.js";
+import { surfaceAppSelectionReadModel } from "../../constitute-ui/src/surface-selection-read-model.js";
 
 const ISSUED_AT = 1700000000;
 
@@ -69,6 +65,12 @@ export const nvrSurfaceAppContract = assertSurfaceAppContract({
       primitiveRefs: ["media.transport.path"],
       inputs: ["runtime.stream.answer", "media.transport.profile"],
       outputs: ["media.transport.observation", "media.fulfillment.evidence"],
+      evidenceChannels: ["adapter.evidence", "media.transport.observation"],
+      lifecycle: { state: "platformBinding" },
+      transportProfileRefs: ["runtime.media.transport.profile"],
+      renderEvidenceBudgetRef: "nvr-ui.preview",
+      materializationBudgetRefs: ["nvr-ui.preview", "nvr-ui.stream-events"],
+      releaseRefs: ["release:nvr-ui:local"],
       issuedAt: ISSUED_AT,
     },
     {
@@ -80,6 +82,17 @@ export const nvrSurfaceAppContract = assertSurfaceAppContract({
       primitiveRefs: ["stream.intent", "service.surface.admin"],
       inputs: ["camera.selection", "camera.admin.intent"],
       outputs: ["runtime.intent"],
+      evidenceChannels: ["runtime.intent", "adapter.evidence"],
+      lifecycle: { state: "surfaceMapping" },
+      actionRefs: [
+        "list_camera_device_inventory",
+        "apply_camera_device_config",
+        "mount_camera_device",
+        "probe_camera_device",
+      ],
+      projectionRefs: ["nvr.inventory", "nvr.streams"],
+      materializationBudgetRefs: ["nvr-ui.stream-events"],
+      releaseRefs: ["release:nvr-ui:local"],
       issuedAt: ISSUED_AT,
     },
     {
@@ -166,40 +179,91 @@ export const nvrSurfaceApp = defineSurfaceAppContract(nvrSurfaceAppContract, {
   validate: assertSurfaceAppContract,
 });
 
-export const nvrSurfaceRunnerPlan = surfaceAppRunnerPlan(nvrSurfaceApp, {
+export const nvrSurfaceAppManifest = assertSurfaceAppManifest({
+  kind: "surface.app.manifest",
+  manifestId: "manifest:nvr-ui",
+  appId: "constitute-nvr-ui",
+  state: SURFACE_APP.MANIFEST_VERSION_STATE.CURRENT,
+  currentAppContractRef: "app:nvr-ui",
+  currentVersion: "0.2.0",
+  defaultSourceMode: SURFACE_APP.FULFILLMENT_MODE.BUNDLED,
+  requiredModuleRoles: [
+    SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,
+    SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL,
+    SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
+    SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
+    SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW,
+  ],
+  bundledSourceRefs: ["bundle:nvr-ui@0.2.0"],
+  compatibilityWindow: {
+    minVersion: "0.2.0",
+    maxVersion: "0.2.x",
+    protocolRef: "protocol:surface-app:v1",
+  },
+  versions: [
+    {
+      appContractRef: "app:nvr-ui",
+      version: "0.2.0",
+      state: SURFACE_APP.MANIFEST_VERSION_STATE.CURRENT,
+      sourceMode: SURFACE_APP.FULFILLMENT_MODE.BUNDLED,
+      requiredModuleRoles: [
+        SURFACE_APP.MODULE_ROLE.RUNTIME_CLIENT,
+        SURFACE_APP.MODULE_ROLE.PROJECTION_MODEL,
+        SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
+        SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
+        SURFACE_APP.MODULE_ROLE.PRODUCT_VIEW,
+      ],
+      compatibilityWindow: {
+        minVersion: "0.2.0",
+        maxVersion: "0.2.x",
+        protocolRef: "protocol:surface-app:v1",
+      },
+      bundledSourceRefs: ["bundle:nvr-ui@0.2.0"],
+      grantRefs: ["grant:app:nvr-ui:run"],
+      runnerRequirementRefs: ["runner:req:nvr-ui"],
+      serviceManagerRequirementRefs: ["service-manager:req:nvr-ui"],
+      compatibilityRefs: ["protocol:surface-app:v1"],
+      bootstrapContractRef: "bootstrap-contract:app:nvr-ui",
+      releaseContractRef: "release:nvr-ui:local",
+      issuedAt: ISSUED_AT,
+    },
+  ],
+  appContractRefs: ["app:nvr-ui"],
+  grantRefs: ["grant:app:nvr-ui:run"],
+  runnerRequirementRefs: ["runner:req:nvr-ui"],
+  serviceManagerRequirementRefs: ["service-manager:req:nvr-ui"],
+  compatibilityRefs: ["protocol:surface-app:v1"],
+  bootstrapContractRefs: ["bootstrap-contract:app:nvr-ui"],
+  releaseContractRefs: ["release:nvr-ui:local"],
+  authorityRefs: ["authority:nvr-ui:local"],
+  evidenceRefs: ["build:nvr-ui:local"],
   issuedAt: ISSUED_AT,
 });
 
-export const nvrServiceManagerSecretBoundary = assertServiceManagerSecretBoundary(
-  nvrSurfaceRunnerPlan.secretBoundary,
-);
-
-export const nvrSurfaceBootstrapContract = assertSurfaceAppBootstrapContract(
-  nvrSurfaceRunnerPlan.bootstrapContract,
-);
-
-export const nvrSurfaceBootstrapPosture = surfaceAppBootstrapPosture(nvrSurfaceApp, {
-  issuedAt: ISSUED_AT,
-});
-
-export const nvrServiceManagerOperationPosture = surfaceServiceManagerOperationPosture(nvrSurfaceApp, {
-  operation: SURFACE_APP.SERVICE_MANAGER_OPERATION.HEALTH_CHECK,
-  operationId: "operation:nvr-ui:bootstrap-health",
-  requestedAt: ISSUED_AT,
-});
-
-export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvrSurfaceApp, {
-  operationPosture: nvrServiceManagerOperationPosture,
-  digestId: "proof-digest:nvr-ui:bootstrap",
-  observedAt: ISSUED_AT,
-});
-
-export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
+export const nvrSurfaceSelectionReadModel = surfaceAppSelectionReadModel({
+  surfaceApp: nvrSurfaceApp,
+  manifest: nvrSurfaceAppManifest,
   productSurface: "constitute-nvr-ui",
-  runnerPlan: nvrSurfaceRunnerPlan,
-  bootstrapContract: nvrSurfaceBootstrapContract,
-  serviceManagerSecretBoundary: nvrServiceManagerSecretBoundary,
-  bootstrapPosture: nvrSurfaceBootstrapPosture,
-  serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
-  serviceManagerProofDigest: nvrServiceManagerProofDigest,
+  runtimeVersion: "0.2.0",
+  issuedAt: ISSUED_AT,
+  serviceManagerOperationOptions: {
+    operation: SURFACE_APP.SERVICE_MANAGER_OPERATION.HEALTH_CHECK,
+    operationId: "operation:nvr-ui:bootstrap-health",
+    requestedAt: ISSUED_AT,
+  },
+  serviceManagerProofDigestOptions: {
+    digestId: "proof-digest:nvr-ui:bootstrap",
+    observedAt: ISSUED_AT,
+  },
 });
+
+export const nvrSurfaceRuntimeSelectionPosture = nvrSurfaceSelectionReadModel.runtimeSelectionPosture;
+export const nvrSurfaceRunnerPlan = nvrSurfaceSelectionReadModel.runnerPlan;
+export const nvrServiceManagerSecretBoundary = nvrSurfaceSelectionReadModel.serviceManagerSecretBoundary;
+export const nvrSurfaceBootstrapContract = nvrSurfaceSelectionReadModel.bootstrapContract;
+export const nvrSurfaceBootstrapPosture = nvrSurfaceSelectionReadModel.bootstrapPosture;
+export const nvrServiceManagerOperationPosture = nvrSurfaceSelectionReadModel.serviceManagerOperationPosture;
+export const nvrServiceManagerProofDigest = nvrSurfaceSelectionReadModel.serviceManagerProofDigest;
+export const nvrSurfaceAppInstancePosture = nvrSurfaceSelectionReadModel.appInstancePosture;
+
+export const nvrSurfaceAttachContext = nvrSurfaceSelectionReadModel.attachContext;

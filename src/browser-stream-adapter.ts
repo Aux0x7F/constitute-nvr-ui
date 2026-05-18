@@ -13,6 +13,7 @@ export {
   collectBrowserMediaFulfillmentEvidence,
   createBrowserStreamOffer,
   isRuntimeMediaTransportProfileFailure,
+  mediaWebRtcAdapterBindingProfile,
   mediaFulfillmentEvidenceFromAdapterState,
   mediaFulfillmentEvidenceFromRender,
   mediaFulfillmentEvidenceFromTrack,
@@ -22,6 +23,7 @@ export {
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
+  shouldReportMediaFulfillmentEvidence,
 } from "../../constitute-ui/src/media-webrtc-adapter.ts";
 
 export type {
@@ -30,5 +32,7 @@ export type {
   BrowserMediaStreamBindResult,
   BrowserStreamOffer,
   BrowserStreamSession,
+  MediaWebRtcAdapterBindingProfile,
   RuntimeMediaTransportProfile,
+  SurfaceAdapterBindingPosture,
 } from "../../constitute-ui/src/media-webrtc-adapter.ts";
