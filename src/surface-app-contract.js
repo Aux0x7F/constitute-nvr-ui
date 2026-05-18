@@ -3,8 +3,11 @@ import {
   SWARM,
   assertServiceManagerSecretBoundary,
   assertSurfaceAppBootstrapContract,
+  assertSurfaceAppInstancePosture,
   assertSurfaceAppManifest,
+  assertSurfaceAppRuntimeSelectionPosture,
   assertSurfaceAppContract,
+  assertSurfaceAppRunnerPlan,
 } from "../../constitute-protocol/src/index.js";
 import {
   defineSurfaceAppContract,
@@ -230,18 +233,18 @@ export const nvrSurfaceAppManifest = assertSurfaceAppManifest({
   issuedAt: ISSUED_AT,
 });
 
-export const nvrSurfaceRuntimeSelectionPosture = surfaceAppRuntimeSelectionPosture(
+export const nvrSurfaceRuntimeSelectionPosture = assertSurfaceAppRuntimeSelectionPosture(surfaceAppRuntimeSelectionPosture(
   nvrSurfaceAppManifest,
   [nvrSurfaceApp],
   {
     runtimeVersion: "0.2.0",
     issuedAt: ISSUED_AT,
   },
-);
+));
 
-export const nvrSurfaceRunnerPlan = surfaceAppRunnerPlan(nvrSurfaceApp, {
+export const nvrSurfaceRunnerPlan = assertSurfaceAppRunnerPlan(surfaceAppRunnerPlan(nvrSurfaceApp, {
   issuedAt: ISSUED_AT,
-});
+}));
 
 export const nvrServiceManagerSecretBoundary = assertServiceManagerSecretBoundary(
   nvrSurfaceRunnerPlan.secretBoundary,
@@ -267,7 +270,7 @@ export const nvrServiceManagerProofDigest = surfaceServiceManagerProofDigest(nvr
   observedAt: ISSUED_AT,
 });
 
-export const nvrSurfaceAppInstancePosture = surfaceAppInstancePosture(nvrSurfaceApp, {
+export const nvrSurfaceAppInstancePosture = assertSurfaceAppInstancePosture(surfaceAppInstancePosture(nvrSurfaceApp, {
   runtimeSelectionPosture: nvrSurfaceRuntimeSelectionPosture,
   runnerPlan: nvrSurfaceRunnerPlan,
   bootstrapContract: nvrSurfaceBootstrapContract,
@@ -275,7 +278,7 @@ export const nvrSurfaceAppInstancePosture = surfaceAppInstancePosture(nvrSurface
   serviceManagerOperationPosture: nvrServiceManagerOperationPosture,
   serviceManagerProofDigest: nvrServiceManagerProofDigest,
   issuedAt: ISSUED_AT,
-});
+}));
 
 export const nvrSurfaceAttachContext = nvrSurfaceApp.attachContext({
   productSurface: "constitute-nvr-ui",
