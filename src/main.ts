@@ -1456,6 +1456,12 @@ function runtimeAuthorityBlockedDetail(posture: RuntimeAuthorityPosture | null |
   return reason || `Runtime authority is ${state} for ${domain}.`;
 }
 
+function isRuntimeSwarmEdgeAuthorityWait(error: unknown): boolean {
+  const detail = String((error as Error)?.message || error || "").toLowerCase();
+  return detail.includes("missingruntimeauthoritymemberref")
+    || (detail.includes("runtime authority") && detail.includes("waitingauthority"));
+}
+
 function markRuntimeAuthorityWaiting(posture: RuntimeAuthorityPosture | null | undefined): void {
   const detail = runtimeAuthorityBlockedDetail(posture);
   appendLog(`waiting for runtime authority: ${detail}`);
@@ -2002,6 +2008,12 @@ async function ensureRuntimeSwarmEdgeForContext(
       appendLog(`runtime swarm edge attach requested for ${edgeEndpoint}`);
       return true;
     } catch (error) {
+      if (isRuntimeSwarmEdgeAuthorityWait(error)) {
+        swarmEdgeAttachRepairFailureCount = 0;
+        swarmEdgeAttachRepairBackoffUntil = 0;
+        scheduleRuntimeAuthorityReconnect(String((error as Error)?.message || error));
+        return false;
+      }
       swarmEdgeAttachRepairFailureCount += 1;
       swarmEdgeAttachRepairBackoffUntil = Date.now() + Math.min(
         RUNTIME_SWARM_EDGE_ATTACH_REPAIR_MAX_BACKOFF_MS,
@@ -4662,6 +4674,25 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
     closePeerConnection();
     markRuntimeAuthorityWaiting(authority);
     scheduleRuntimeAuthorityReconnect(runtimeAuthorityBlockedDetail(authority));
+    return;
+  }
+
+  const needsEdgeAttach = runtimeSnapshot?.edge?.connected !== true || runtimeSnapshot?.edge?.mode === "pendingAuthority";
+  const edgeAttached = needsEdgeAttach
+    ? await ensureRuntimeSwarmEdgeForContext(context, { force: true }).catch((error) => {
+      const detail = String((error as Error)?.message || error);
+      if (isRuntimeSwarmEdgeAuthorityWait(error)) {
+        appendLog(`runtime swarm edge waiting for authority: ${detail}`);
+        scheduleRuntimeAuthorityReconnect(detail);
+        return false;
+      }
+      appendLog(`runtime swarm edge attach unavailable: ${detail}`);
+      return false;
+    })
+    : true;
+  if (!edgeAttached && runtimeSnapshot?.edge?.mode === "pendingAuthority") {
+    markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: "Runtime authority is required before swarm edge attach." });
+    scheduleRuntimeAuthorityReconnect("runtime edge attach is waiting for authority");
     return;
   }
 
