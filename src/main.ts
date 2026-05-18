@@ -1386,6 +1386,10 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       onConsumerFloor: (floor) => {
         runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
       },
+      onAttachPosture: (posture: Record<string, unknown>) => {
+        if (!posture || posture.severity === "info") return;
+        appendLog(`runtime attach ${String(posture.state || "degraded")}`);
+      },
       onAttachTimeout: () => {
         runtimeAttached = false;
         appendLog("runtime attach unavailable");
