@@ -7,6 +7,8 @@ import {
   createSurfaceModuleRegistry,
   requireSurfaceModuleBinding,
   surfaceAppModuleBindings,
+  surfacePlatformAdapterBindingPosture,
+  surfaceServiceSurfaceAdapterBindingPosture,
   surfaceModuleRegistryPosture,
 } from "../../constitute-ui/src/surface-module-registry.js";
 import { SURFACE_APP, SWARM } from "../../constitute-protocol/src/index.js";
@@ -65,6 +67,12 @@ export const nvrSurfaceModuleRegistry = createSurfaceModuleRegistry([
     moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
     role: SURFACE_APP.MODULE_ROLE.PLATFORM_ADAPTER,
     version: "0.1.0",
+    primitiveRefs: ["media.transport.path"],
+    evidenceChannels: ["adapter.evidence", "media.transport.observation"],
+    transportProfileRefs: ["runtime.media.transport.profile"],
+    renderEvidenceBudgetRef: "nvr-ui.preview",
+    materializationBudgetRefs: ["nvr-ui.preview", "nvr-ui.stream-events"],
+    releaseRefs: ["release:nvr-ui:local"],
     implementation: {
       applyBrowserStreamAnswer,
       applyBrowserStreamCandidate,
@@ -91,6 +99,16 @@ export const nvrSurfaceModuleRegistry = createSurfaceModuleRegistry([
     moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
     role: SURFACE_APP.MODULE_ROLE.SERVICE_SURFACE_ADAPTER,
     version: "0.2.0",
+    primitiveRefs: ["stream.intent", "service.surface.admin"],
+    actionRefs: [
+      "list_camera_device_inventory",
+      "apply_camera_device_config",
+      "mount_camera_device",
+      "probe_camera_device",
+    ],
+    projectionRefs: ["nvr.inventory", "nvr.streams"],
+    materializationBudgetRefs: ["nvr-ui.stream-events"],
+    releaseRefs: ["release:nvr-ui:local"],
     implementation: { createNvrAdminAdapter, normalizeNvrAdminAdapterError },
   },
   {
@@ -162,6 +180,24 @@ export const nvrSurfaceModules = Object.freeze({
   serviceSurfaceAdapter: nvrSurfaceModuleBindings.byKey.serviceSurfaceAdapter,
   productView: nvrSurfaceModuleBindings.byKey.productView,
 });
+
+export const nvrPlatformAdapterBindingPosture = surfacePlatformAdapterBindingPosture(
+  nvrSurfaceModuleRegistry,
+  nvrSurfaceRuntimeSelectionPosture,
+  {
+    moduleRef: "constitute-ui/media-webrtc-adapter@0.1.0",
+    renderEvidenceBudgetRef: "nvr-ui.preview",
+  },
+);
+
+export const nvrServiceSurfaceAdapterBindingPosture = surfaceServiceSurfaceAdapterBindingPosture(
+  nvrSurfaceModuleRegistry,
+  nvrSurfaceRuntimeSelectionPosture,
+  {
+    moduleRef: "constitute-nvr-ui/service-surface-adapter@0.2.0",
+    primitiveRef: "stream.intent",
+  },
+);
 
 export const nvrRuntimeClientModule = nvrSurfaceModules.runtimeClient.implementation;
 export const nvrProjectionModelModule = nvrSurfaceModules.projectionModel.implementation;

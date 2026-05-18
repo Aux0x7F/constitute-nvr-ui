@@ -74,6 +74,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /export function runtimeMediaTransportBlockedDetail/);
   assert.match(adapter, /export function isRuntimeMediaTransportProfileFailure/);
   assert.match(main, /moduleRef: nvrSurfaceModules\.platformAdapter\.moduleRef/);
+  assert.match(main, /adapterBindingPosture: nvrPlatformAdapterBindingPosture/);
   assert.doesNotMatch(main, /function runtimeMediaIceServers/);
   assert.doesNotMatch(main, /function runtimeMediaIceServerUrls/);
   assert.doesNotMatch(main, /function runtimeMediaTransportContract/);
@@ -132,6 +133,8 @@ test("nvr ui attaches to the account-owned runtime worker contract", () => {
   assert.match(modules, /requireNvrSurfaceModuleClaim/);
   assert.match(modules, /requireNvrSurfaceModuleBinding/);
   assert.match(modules, /nvrSurfaceModuleBindings\.byKey\.platformAdapter/);
+  assert.match(modules, /nvrPlatformAdapterBindingPosture/);
+  assert.match(modules, /nvrServiceSurfaceAdapterBindingPosture/);
   assert.match(main, /activeRuntimeClientModuleRef/);
   assert.match(main, /attachContext: nvrRuntimeAttachContext/);
   assert.match(main, /from "\.\.\/\.\.\/constitute-account\/runtime-contract\.js"/);
@@ -225,9 +228,11 @@ test("nvr service administration uses a service-surface adapter boundary", () =>
   assert.match(adminAdapter, /export function createNvrAdminAdapter/);
   assert.match(adminAdapter, /export function normalizeNvrAdminAdapterError/);
   assert.match(adminAdapter, /export function nvrAdminActionTimeoutMs/);
-  assert.match(adminAdapter, /moduleRef: String\(options\.moduleRef \|\| ""\)/);
+  assert.match(adminAdapter, /createServiceSurfaceAdapter/);
+  assert.match(adminAdapter, /serviceSurfaceActionTimeoutMs/);
   assert.match(main, /moduleRef: nvrSurfaceModules\.serviceSurfaceAdapter\.moduleRef/);
-  assert.match(adminAdapter, /action === "apply_camera_device_config"/);
+  assert.match(main, /bindingPosture: nvrServiceSurfaceAdapterBindingPosture/);
+  assert.match(adminAdapter, /apply_camera_device_config: options\.applyCameraDeviceConfigTimeoutMs/);
   assert.match(adminAdapter, /Gateway update required before camera administration is available/);
   assert.match(adminAdapter, /Owner runtime access is required before camera administration is available/);
 });

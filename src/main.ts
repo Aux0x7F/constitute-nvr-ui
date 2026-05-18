@@ -6,10 +6,12 @@ import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.j
 import {
   NVR_PREVIEW_SOURCE_LIMIT,
   NVR_STREAM_EVENT_LIMIT,
+  nvrPlatformAdapterBindingPosture,
   nvrPlatformAdapterModule,
   nvrProductViewModule,
   nvrProjectionModelModule,
   nvrRuntimeClientModule,
+  nvrServiceSurfaceAdapterBindingPosture,
   nvrServiceSurfaceAdapterModule,
   nvrSurfaceBudgets,
   nvrSurfaceModules,
@@ -2286,6 +2288,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       sessionId: expectedSessionId,
       nonce,
       moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
+      adapterBindingPosture: nvrPlatformAdapterBindingPosture,
       iceServers: mediaIceServers,
       onCandidate: (candidate) => {
         if (!streamOpenQueued) return;
@@ -2518,6 +2521,7 @@ function adminProjectionFallback(action: string, payload: Record<string, unknown
 
 const nvrAdminAdapter = createNvrAdminAdapter({
   moduleRef: nvrSurfaceModules.serviceSurfaceAdapter.moduleRef,
+  bindingPosture: nvrServiceSurfaceAdapterBindingPosture,
   defaultTimeoutMs: ADMIN_INTENT_TIMEOUT_MS,
   applyCameraDeviceConfigTimeoutMs: CAMERA_APPLY_REQUEST_TIMEOUT_MS,
   publishRuntimeServiceIntent,
