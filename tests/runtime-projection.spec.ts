@@ -766,20 +766,19 @@ test("direct entry consumes runtime-owned media transport profile", async ({ pag
     } }).__runtimeProbe;
     const streamOpen = probe?.intents.find((intent) => intent.type === "runtime.stream.open");
     const payload = streamOpen?.payload as Record<string, unknown> | undefined;
-    const iceServers = payload?.iceServers as Record<string, unknown> | undefined;
     const profile = payload?.mediaTransportProfile as Record<string, unknown> | undefined;
     const pcIceServers = probe?.peerConnectionConfigs[0]?.iceServers || [];
     return {
       mediaProfileRequests: probe?.mediaProfileRequests || 0,
       pcIceServerCount: pcIceServers.length,
-      runtimeStun: Array.isArray(iceServers?.stun) ? iceServers.stun[0] : "",
+      intentCarriesIceServerUrls: Boolean(payload?.iceServers),
       profileSelectedBy: profile?.selectedBy || "",
       profileIceServerCount: profile?.iceServerCount || 0,
     };
   })).toEqual(expect.objectContaining({
     mediaProfileRequests: 1,
     pcIceServerCount: 1,
-    runtimeStun: "stun:runtime-policy",
+    intentCarriesIceServerUrls: false,
     profileSelectedBy: "runtime",
     profileIceServerCount: 1,
   }));

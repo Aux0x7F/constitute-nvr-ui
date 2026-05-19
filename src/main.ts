@@ -92,7 +92,6 @@ const {
   mediaFulfillmentEvidenceFromTrack,
   mediaFulfillmentReleaseEvidence,
   mediaTransportObservationFromFulfillmentEvidence,
-  runtimeMediaIceServerUrls,
   runtimeMediaIceServers,
   runtimeMediaTransportBlockedDetail,
   runtimeMediaTransportContract,
@@ -2342,10 +2341,6 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       mediaTransportProfile: runtimeMediaTransportContract(mediaTransportProfile),
       materializationBudgetRef: String(nvrSurfaceBudgets.preview.budgetId || "nvr-ui.preview"),
       evidenceBudgetRef: String(nvrSurfaceBudgets.streamEvents.budgetId || "nvr-ui.stream-events"),
-      iceServers: {
-        stun: runtimeMediaIceServerUrls(mediaTransportProfile, "stun:"),
-        turn: runtimeMediaIceServerUrls(mediaTransportProfile, "turn:"),
-      },
       issuedAt,
       expiresAt,
     };

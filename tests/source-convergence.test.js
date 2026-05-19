@@ -109,7 +109,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /RUNTIME_MEDIA_TRANSPORT_PROFILE_GET/);
   assert.match(main, /runtimeMediaTransportProfile/);
   assert.doesNotMatch(main, /stun\.l\.google/);
-  assert.match(main, /iceServers:\s*\{/);
+  assert.doesNotMatch(main, /iceServers:\s*\{/);
   assert.equal(main.includes(retiredSignal), false);
   assert.equal(main.includes(retiredSignalRpc), false);
   assert.equal(main.includes(retiredCapability), false);
