@@ -32,7 +32,11 @@ import {
   runtimeWorkerScriptUrl as accountRuntimeWorkerScriptUrl,
 } from "../../constitute-account/runtime-contract.js";
 import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "../../constitute-account/runtime-diagnostics.js";
-import { browserStorageShellContext, deriveRuntimeShellState } from "constitute-ui/runtime-shell-state";
+import {
+  browserStorageShellContext,
+  deriveRuntimeMaterializationPosture,
+  deriveRuntimeShellState,
+} from "constitute-ui/runtime-shell-state";
 import {
   adapterReconnectDelayMs,
   adapterReconnectJitterMs,
@@ -556,7 +560,9 @@ let runtimeClient: ReturnType<typeof nvrRuntimeClientModule.createRuntimeSurface
 let runtimePort: MessagePort | null = null;
 let runtimeAttached = false;
 let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
+let runtimeSnapshotMaterializationBudget: Record<string, unknown> | null = null;
 let runtimeSnapshotConsumerFloor: Record<string, unknown> | null = null;
+let runtimeSnapshotMaterializationPosture: ReturnType<typeof deriveRuntimeMaterializationPosture> = deriveRuntimeMaterializationPosture(null);
 let runtimeServiceContext: RuntimeServiceContext | null = null;
 let directEntryRepairTimer = 0;
 let directEntryRepairInFlight: Promise<void> | null = null;
@@ -1389,10 +1395,20 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
         runtimePort = runtimeClient?.port as MessagePort | null;
         runtimeAttached = Boolean(runtimePort);
         absorbRuntimeSnapshot(snapshot);
+        runtimeSnapshotMaterializationPosture = deriveRuntimeMaterializationPosture(runtimeSnapshot || {}, {
+          materializationBudget: runtimeSnapshotMaterializationBudget || undefined,
+          consumerFloor: runtimeSnapshotConsumerFloor || undefined,
+        });
         refreshRuntimeProjectionLabels();
+      },
+      onMaterializationBudget: (budget) => {
+        runtimeSnapshotMaterializationBudget = (budget && typeof budget === "object") ? budget as Record<string, unknown> : null;
       },
       onConsumerFloor: (floor) => {
         runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
+      },
+      onMaterializationPosture: (posture) => {
+        runtimeSnapshotMaterializationPosture = posture;
       },
       onAttachPosture: (posture: Record<string, unknown>) => {
         if (!posture || posture.severity === "info") return;
@@ -3988,6 +4004,16 @@ function renderProjectionSyncSummary(): string {
         String(runtimeSnapshotConsumerFloor.lagState || "unknown").trim() || "unknown",
         runtimeSnapshotConsumerFloor.ackFloor ? `ack ${runtimeSnapshotConsumerFloor.ackFloor}` : "",
         runtimeSnapshotConsumerFloor.witnessFloor ? `witness ${runtimeSnapshotConsumerFloor.witnessFloor}` : "",
+      ].filter(Boolean).join(" / "),
+    ]);
+  }
+  if (runtimeSnapshotMaterializationPosture) {
+    rows.push([
+      "runtime.materialization",
+      [
+        String(runtimeSnapshotMaterializationPosture.state || "unknown").trim() || "unknown",
+        runtimeSnapshotMaterializationPosture.budgetId ? `budget ${runtimeSnapshotMaterializationPosture.budgetId}` : "",
+        runtimeSnapshotMaterializationPosture.estimatedSnapshotBytes ? `${runtimeSnapshotMaterializationPosture.estimatedSnapshotBytes} bytes` : "",
       ].filter(Boolean).join(" / "),
     ]);
   }

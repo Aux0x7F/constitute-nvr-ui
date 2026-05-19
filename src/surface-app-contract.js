@@ -170,6 +170,7 @@ export const nvrSurfaceAppContract = assertSurfaceAppContract({
   },
   releasePosture: {
     state: SURFACE_APP.RELEASE_POSTURE.STATIC,
+    releaseRef: "release:nvr-ui:local",
     evidenceRefs: ["build:nvr-ui:local"],
   },
   issuedAt: ISSUED_AT,
