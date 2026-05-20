@@ -987,7 +987,7 @@ function shellDeriveContext(context: RuntimeServiceContext | null = runtimeServi
 }
 
 function identityHandleForContext(context: RuntimeServiceContext | null): string {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(context), adapterLive: hasLiveTiles() });
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(context), adapterLive: hasAllExpectedLiveTiles(context) });
   if (!shellState.identity.linked) return "@unlinked";
   const runtimeHandle = shellState.identity.handle;
   if (runtimeHandle !== "@linked") return runtimeHandle;
@@ -997,7 +997,7 @@ function identityHandleForContext(context: RuntimeServiceContext | null): string
 }
 
 function refreshIdentityHandle(): void {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasLiveTiles() });
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasAllExpectedLiveTiles() });
   identityHandleEl.textContent = identityHandleForContext(runtimeServiceContext);
   identityHandleEl.classList.toggle("identityHandle-linked", shellState.identity.linked);
   identityHandleEl.classList.toggle("identityHandle-unlinked", !shellState.identity.linked);
@@ -1203,7 +1203,7 @@ function handleRuntimeRouteObservation(observation: Record<string, unknown> | un
   if (session) applyRuntimeRouteObservationToStreamSession(session, observation);
   const detail = String(posture.detail || "route observation").trim();
   if (posture.routeDelivered) {
-    if (hasLiveTiles()) {
+    if (hasAllExpectedLiveTiles()) {
       setConnectionState("live", "good");
       setDrawerStatus("Live preview connected.");
       return;
@@ -2206,12 +2206,22 @@ function bindRuntimeStreamTrack(sourceId: string, stream: unknown, track: MediaS
     }
     reportMediaFulfillmentEvidence(mediaFulfillmentEvidenceFromTrack(session, track));
     reportBrowserMediaStats(session);
-    cancelStreamLiveWatchdog();
-    reconnectAttemptCount = 0;
-    resetRuntimeStreamRecovery("adapterLive");
     setTileState(sourceId, "live", "Live preview stream attached.");
-    setConnectionState("live", "good");
-    setDrawerStatus("Live preview connected.");
+    if (hasAllExpectedLiveTiles()) {
+      cancelStreamLiveWatchdog();
+      reconnectAttemptCount = 0;
+      resetRuntimeStreamRecovery("adapterLive");
+      setConnectionState("live", "good");
+      setDrawerStatus("Live preview connected.");
+    } else {
+      const missing = missingLiveSourceIds();
+      setConnectionState("partial", "warn");
+      setDrawerStatus(`Live preview connected for ${cameraLabelForSource(sourceId)}; waiting for ${formatCameraScope(missing)}.`);
+      for (const missingSourceId of missing) {
+        setTileState(missingSourceId, "connecting", "Waiting for live preview stream.");
+      }
+      scheduleStreamLiveWatchdog("waiting for remaining live preview streams");
+    }
   };
   const markPendingRender = () => {
     const evidence = reportRenderReadiness(session, tile.video);
@@ -3866,6 +3876,44 @@ function hasLiveTiles(): boolean {
   return false;
 }
 
+function liveTileSourceIds(): string[] {
+  return Array.from(cameraTiles.entries())
+    .filter(([, tile]) => tile.card.dataset.state === "live")
+    .map(([sourceId]) => sourceId);
+}
+
+function expectedLiveSourceIds(context: RuntimeServiceContext | null = runtimeServiceContext): string[] {
+  return context ? runtimePreviewSourceIds(context) : Array.from(cameraTiles.keys());
+}
+
+function missingLiveSourceIds(context: RuntimeServiceContext | null = runtimeServiceContext): string[] {
+  const live = new Set(liveTileSourceIds());
+  return expectedLiveSourceIds(context).filter((sourceId) => !live.has(sourceId));
+}
+
+function hasAllExpectedLiveTiles(context: RuntimeServiceContext | null = runtimeServiceContext): boolean {
+  const expected = expectedLiveSourceIds(context);
+  if (expected.length === 0) return false;
+  const live = new Set(liveTileSourceIds());
+  return expected.every((sourceId) => live.has(sourceId));
+}
+
+function staleMissingLiveSourceIds(context: RuntimeServiceContext | null = runtimeServiceContext): string[] {
+  const now = Date.now();
+  return missingLiveSourceIds(context).filter((sourceId) => {
+    const sourceSessions = activeRuntimeStreamSessions()
+      .filter((session) => session.sourceId === sourceId);
+    if (sourceSessions.length === 0) return true;
+    return sourceSessions.every((session) => {
+      const ageMs = Math.max(0, now - Number(session.issuedAt || 0));
+      return ageMs >= MEDIA_RENDER_BLOCKED_GRACE_MS
+        && session.mediaTransportUsable !== true
+        && session.mediaTrackLive !== true
+        && session.routeState !== "mediaUsable";
+    });
+  });
+}
+
 function escapeHtml(value: string): string {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -4046,7 +4094,7 @@ function renderStoragePinIntentSummary(): string {
 }
 
 function renderRuntimePostureSummary(): string {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasLiveTiles() });
+  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasAllExpectedLiveTiles() });
   const resource = shellState.resource || {};
   const retention = shellState.retention || {};
   return `
@@ -4757,7 +4805,7 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
   }
   markStartupStage("nvr.stream-intent.queued");
   applyNvrRuntimeProjections();
-  if (!hasLiveTiles()) {
+  if (!hasAllExpectedLiveTiles()) {
     const posture = runtimeStreamSessionPosture();
     if (posture.waitingRouteCount > 0) {
       markRouteBaselineWaiting();
@@ -4947,8 +4995,24 @@ function scheduleStreamLiveWatchdog(reason: string): void {
   if (!runtimeServiceContext) return;
   streamLiveWatchdogTimer = window.setTimeout(() => {
     streamLiveWatchdogTimer = 0;
-    if (hasLiveTiles()) return;
+    if (hasAllExpectedLiveTiles()) return;
     const posture = runtimeStreamSessionPosture();
+    const missingSources = missingLiveSourceIds();
+    const staleMissingSources = staleMissingLiveSourceIds();
+    if (hasLiveTiles() && missingSources.length > 0) {
+      const missingLabel = formatCameraScope(missingSources);
+      setConnectionState("partial", "warn");
+      setDrawerStatus(`Live preview partially connected; waiting for ${missingLabel}.`);
+      for (const sourceId of missingSources) {
+        setTileState(sourceId, "connecting", "Waiting for live preview stream.");
+      }
+      if (staleMissingSources.length > 0) {
+        scheduleMissingSourceReconnect(staleMissingSources, `missing live preview stream: ${formatCameraScope(staleMissingSources)}`);
+      } else {
+        scheduleStreamLiveWatchdog("waiting for remaining live preview streams");
+      }
+      return;
+    }
     const activationStillOpen = posture.sessionCount > 0
       && (!posture.expiresAt || posture.expiresAt > Date.now());
     if (activationStillOpen && posture.waitingRouteCount > 0) {
@@ -5016,6 +5080,54 @@ function scheduleStreamLiveWatchdog(reason: string): void {
     void reportServiceStatus("reconnecting", "Stream route delivered but no live media track attached; retrying.", "stream_adapter");
     scheduleAutomaticReconnect("stream adapter did not become live");
   }, RUNTIME_STREAM_LIVE_WATCHDOG_MS);
+}
+
+function scheduleMissingSourceReconnect(sourceIds: string[], reason: string): void {
+  const missing = normalizeSourceIds(sourceIds);
+  if (!runtimeServiceContext || missing.length === 0 || scheduledReconnectTimer || reconnectInFlight || reconnectScheduleInFlight) return;
+  reconnectAttemptCount += 1;
+  const attempt = reconnectAttemptCount;
+  const fallbackDelayMs = reconnectDelayMs(
+    reconnectAttemptCount,
+    RUNTIME_STREAM_RECONNECT_BASE_MS,
+    RUNTIME_STREAM_RECONNECT_MAX_MS,
+  );
+  reconnectScheduleInFlight = true;
+  void (async () => {
+    try {
+      const posture = await runtimeStreamRecoveryPosture(reason, attempt, fallbackDelayMs);
+      if (!runtimeServiceContext || scheduledReconnectTimer || reconnectInFlight) return;
+      const delayMs = Math.max(0, Number(posture.delayMs || fallbackDelayMs) || fallbackDelayMs);
+      appendLog(`scheduling missing stream retry in ${delayMs}ms (${reason})`);
+      setConnectionState("partial", "warn");
+      setDrawerStatus(`Retrying missing live preview stream${missing.length === 1 ? "" : "s"}.`);
+      for (const sourceId of missing) {
+        setTileState(sourceId, "connecting", "Retrying missing live preview stream.");
+      }
+      void reportServiceStatus("reconnecting", `Retrying missing live preview stream (${reason}).`, "stream_projection");
+      scheduledReconnectTimer = window.setTimeout(() => {
+        scheduledReconnectTimer = 0;
+        reconnectInFlight = (async () => {
+          let retryReason = "";
+          try {
+            await publishRuntimeStreamIntent(missing);
+            scheduleStreamLiveWatchdog("missing stream retry queued");
+          } catch (error) {
+            retryReason = String((error as Error)?.message || error || "missing stream retry failed");
+            appendLog(`missing stream retry failed: ${retryReason}`);
+            for (const sourceId of missing) {
+              setTileState(sourceId, "unavailable", retryReason);
+            }
+          } finally {
+            reconnectInFlight = null;
+            if (retryReason) scheduleMissingSourceReconnect(missing, retryReason);
+          }
+        })();
+      }, delayMs);
+    } finally {
+      reconnectScheduleInFlight = false;
+    }
+  })();
 }
 
 function scheduleAutomaticReconnect(reason: string): void {

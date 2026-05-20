@@ -348,8 +348,13 @@ test("first-party account centers use shared shell state and account-only action
 test("nvr ui keeps live media state distinct from route delivery and inventory gaps", () => {
   const nvr = source("constitute-nvr-ui/src/main.ts");
 
-  assert.match(nvr, /if \(hasLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
+  assert.match(nvr, /function hasAllExpectedLiveTiles\(/);
+  assert.match(nvr, /function missingLiveSourceIds\(/);
+  assert.match(nvr, /function scheduleMissingSourceReconnect\(/);
+  assert.match(nvr, /if \(hasAllExpectedLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
   assert.match(nvr, /const markRenderLive = \(evidence = reportRenderReadiness\(session, tile\.video\)\) => \{[\s\S]*?setTileState\(sourceId, "live"/);
+  assert.match(nvr, /waiting for remaining live preview streams/);
+  assert.match(nvr, /Retrying missing live preview stream/);
   assert.match(nvr, /evidence\.state !== SWARM\.MEDIA_FULFILLMENT_STATE\.USABLE/);
   assert.match(nvr, /tile\.video\.addEventListener\("playing", markRenderLive, \{ once: true \}\)/);
   assert.match(nvr, /track\.readyState === "live"[\s\S]*?markPendingRender\(\);[\s\S]*?window\.setTimeout\(markRenderLive, 1_000\)/);
