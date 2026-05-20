@@ -95,9 +95,11 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.doesNotMatch(main, /Math\.random\(\) \* Math\.min\(1_000, baseMs\)/);
   assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
+  assert.match(main, /applyRuntimeStreamLifecycleToStreamSession/);
   assert.match(streamSession, /memberWritten/);
   assert.match(streamSession, /memberRead/);
   assert.match(streamSession, /routeAccepted/);
+  assert.match(streamSession, /export function applyRuntimeStreamLifecycleToStreamSession/);
   assert.doesNotMatch(main, /state === "accepted" \? "serviceAccepted" : state/);
   assert.match(main, /applyRuntimeActivationPostureFromSnapshot/);
   assert.match(main, /activationResolutions/);
@@ -316,7 +318,7 @@ test("nvr ui uses shared summary row component instead of a local kv dialect", (
   assert.doesNotMatch(styles, /\.kv\b/);
 });
 
-test("first-party account centers use shared shell state and account-only actions", () => {
+test("first-party account centers use shared runtime read models and account-only actions", () => {
   const account = source("constitute-account/app.js");
   const gateway = source("constitute-gateway-ui/src/main.js");
   const gatewayRuntimeModel = source("constitute-gateway-ui/src/runtime-model.js");
@@ -325,12 +327,13 @@ test("first-party account centers use shared shell state and account-only action
   const all = [account, gateway, logging, nvr].join("\n");
 
   assert.match(account, /deriveRuntimeShellState/);
-  assert.match(gateway, /deriveRuntimeShellState/);
-  assert.match(logging, /deriveRuntimeShellState/);
-  assert.match(nvr, /deriveRuntimeShellState/);
+  assert.match(gateway, /prepareRuntimeReadModel/);
+  assert.match(gatewayRuntimeModel, /deriveRuntimeMaterializationPosture/);
+  assert.match(logging, /prepareRuntimeReadModel/);
+  assert.match(nvr, /prepareRuntimeReadModel/);
   assert.match(account, /runtimeResourceStatus/);
   assert.match(gatewayRuntimeModel, /Resource posture/);
-  assert.match(logging, /shellState\.resource\?\.state/);
+  assert.match(logging, /runtimeReadModel\.shell/);
   assert.match(nvr, /Runtime Posture/);
   assert.doesNotMatch(all, /Copy Identity ID/);
   assert.doesNotMatch(all, /account\.copy_identity/);

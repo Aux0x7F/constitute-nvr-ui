@@ -1,6 +1,6 @@
 import "constitute-ui/styles.css";
 import "./styles.css";
-import { renderActionList, setConnectionStateText } from "constitute-ui";
+import { prepareRuntimeReadModel, renderActionList, setConnectionStateText } from "constitute-ui";
 import { createKeyValueGrid } from "constitute-ui";
 import { nvrSurfaceApp, nvrSurfaceAttachContext } from "./surface-app-contract.js";
 import {
@@ -35,7 +35,6 @@ import { RUNTIME_DIAGNOSTIC_OPERATOR_PLANES, attachRuntimeDiagnostics } from "..
 import {
   browserStorageShellContext,
   deriveRuntimeMaterializationPosture,
-  deriveRuntimeShellState,
 } from "constitute-ui/runtime-shell-state";
 import {
   adapterReconnectDelayMs,
@@ -45,6 +44,7 @@ import {
 } from "constitute-ui/adapter-lifecycle";
 import {
   applyRuntimeActivationPostureToStreamSession,
+  applyRuntimeStreamLifecycleToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
   applyRuntimeRouteObservationToStreamSession,
   collectRuntimeActivationKeys,
@@ -119,7 +119,10 @@ const nvrRuntimeAttachContext = Object.freeze({
   materializationBudgetRefs: Object.freeze(Object.values(nvrSurfaceBudgets).map((budget) => String(budget.budgetId || ""))),
 });
 
-type RuntimeZoneScope = {
+const LEGACY_DISCOVERY_SCOPE_FIELD = ["zone", "Scope"].join("");
+const LEGACY_DISCOVERY_SCOPE_SNAKE_FIELD = ["zone", "_scope"].join("");
+
+type RuntimeDiscoveryScope = {
   zoneId: string;
   privacy?: string;
   ttl?: number;
@@ -135,7 +138,7 @@ type RuntimeServiceContext = {
   gatewayPk: string;
   servicePk: string;
   service: string;
-  zoneScope?: RuntimeZoneScope;
+  discoveryScope?: RuntimeDiscoveryScope;
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
@@ -560,9 +563,10 @@ let runtimeClient: ReturnType<typeof nvrRuntimeClientModule.createRuntimeSurface
 let runtimePort: MessagePort | null = null;
 let runtimeAttached = false;
 let runtimeDiagnosticsAgent: ReturnType<typeof attachRuntimeDiagnostics> | null = null;
-let runtimeSnapshotMaterializationBudget: Record<string, unknown> | null = null;
-let runtimeSnapshotConsumerFloor: Record<string, unknown> | null = null;
-let runtimeSnapshotMaterializationPosture: ReturnType<typeof deriveRuntimeMaterializationPosture> = deriveRuntimeMaterializationPosture(null);
+let runtimeMaterializationBudget: Record<string, unknown> | null = null;
+let runtimeConsumerFloor: Record<string, unknown> | null = null;
+let runtimeReadModel = prepareRuntimeReadModel(null, runtimeReadModelOptions());
+let runtimeMaterializationPosture: ReturnType<typeof deriveRuntimeMaterializationPosture> = deriveRuntimeMaterializationPosture(null);
 let runtimeServiceContext: RuntimeServiceContext | null = null;
 let directEntryRepairTimer = 0;
 let directEntryRepairInFlight: Promise<void> | null = null;
@@ -575,7 +579,7 @@ let currentSettingsTab: NvrSettingsTab = "nvr";
 let selectedCameraId = "";
 let ptzActiveSourceId = "";
 let selectedLiveCameraId = "";
-let runtimeSnapshot: RuntimeSnapshot | null = null;
+let runtimeBaseline: RuntimeSnapshot | null = null;
 const resolvedResourceNames = new Map<string, string>();
 const cameraSettingsDrafts = new Map<string, CameraSettingsDraft>();
 const dirtyCameraSettings = new Set<string>();
@@ -763,8 +767,9 @@ function rememberResolvedResourceName(pk: unknown, label: unknown): void {
 }
 
 function absorbRuntimeSnapshot(snapshot: unknown): void {
-  runtimeSnapshot = (snapshot && typeof snapshot === "object") ? snapshot as RuntimeSnapshot : null;
-  const names = runtimeSnapshot?.resourceNames;
+  runtimeBaseline = (snapshot && typeof snapshot === "object") ? snapshot as RuntimeSnapshot : null;
+  refreshRuntimeReadModel(runtimeBaseline);
+  const names = runtimeBaseline?.resourceNames;
   if (names && typeof names === "object") {
     for (const [pk, label] of Object.entries(names)) {
       rememberResolvedResourceName(pk, label);
@@ -773,7 +778,7 @@ function absorbRuntimeSnapshot(snapshot: unknown): void {
   applyRuntimeActivationPostureFromSnapshot();
   applyRuntimeMediaFulfillmentPostureFromSnapshot();
   applyNvrRuntimeProjections();
-  if (!runtimeServiceContext && directEntryNvrServiceRecord(runtimeSnapshot)) {
+  if (!runtimeServiceContext && directEntryNvrServiceRecord(runtimeBaseline)) {
     scheduleDirectEntryRuntimeRepair("runtime snapshot advertised Security Cameras");
   }
 }
@@ -986,8 +991,24 @@ function shellDeriveContext(context: RuntimeServiceContext | null = runtimeServi
   return context || browserStorageShellContext();
 }
 
+function runtimeReadModelOptions(context: RuntimeServiceContext | null = null): Record<string, unknown> {
+  return {
+    context: shellDeriveContext(context),
+    adapterLive: hasAllExpectedLiveTiles(context),
+    materializationBudget: runtimeMaterializationBudget || undefined,
+    consumerFloor: runtimeConsumerFloor || undefined,
+    now: Date.now(),
+    clientId: "nvr-ui",
+    surface: "constitute-nvr-ui",
+  };
+}
+
+function refreshRuntimeReadModel(snapshot: RuntimeSnapshot | null = runtimeBaseline): void {
+  runtimeReadModel = prepareRuntimeReadModel((snapshot || {}) as Record<string, unknown>, runtimeReadModelOptions(runtimeServiceContext));
+}
+
 function identityHandleForContext(context: RuntimeServiceContext | null): string {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(context), adapterLive: hasAllExpectedLiveTiles(context) });
+  const shellState = runtimeReadModel.shell as Record<string, any>;
   if (!shellState.identity.linked) return "@unlinked";
   const runtimeHandle = shellState.identity.handle;
   if (runtimeHandle !== "@linked") return runtimeHandle;
@@ -997,7 +1018,7 @@ function identityHandleForContext(context: RuntimeServiceContext | null): string
 }
 
 function refreshIdentityHandle(): void {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasAllExpectedLiveTiles() });
+  const shellState = runtimeReadModel.shell as Record<string, any>;
   identityHandleEl.textContent = identityHandleForContext(runtimeServiceContext);
   identityHandleEl.classList.toggle("identityHandle-linked", shellState.identity.linked);
   identityHandleEl.classList.toggle("identityHandle-unlinked", !shellState.identity.linked);
@@ -1248,7 +1269,7 @@ function streamSessionForRuntimeKeys(keys: Set<string>): RuntimeStreamSession | 
 }
 
 function applyRuntimeActivationPostureFromSnapshot(): void {
-  const activations = runtimeSnapshot?.activationResolutions;
+  const activations = runtimeBaseline?.activationResolutions;
   if (!activations || typeof activations !== "object") return;
   for (const activation of Object.values(activations)) {
     if (!activation || typeof activation !== "object") continue;
@@ -1260,7 +1281,7 @@ function applyRuntimeActivationPostureFromSnapshot(): void {
 }
 
 function applyRuntimeMediaFulfillmentPostureFromSnapshot(): void {
-  const fulfillments = runtimeSnapshot?.mediaFulfillment;
+  const fulfillments = runtimeBaseline?.mediaFulfillment;
   if (!fulfillments || typeof fulfillments !== "object") return;
   for (const posture of Object.values(fulfillments)) {
     if (!posture || typeof posture !== "object") continue;
@@ -1296,12 +1317,7 @@ async function applyRuntimeStreamFrame(frame: Record<string, unknown>): Promise<
     return;
   }
   if (phase === STREAM_SESSION_LIFECYCLE_PHASE.ADMISSION) {
-    session.serviceAccepted = true;
-    session.serviceRejected = false;
-    session.serviceAdmissionTimedOut = false;
-    session.runtimeBlockedReason = "";
-    session.routePending = false;
-    session.routeState = "serviceAccepted";
+    applyRuntimeStreamLifecycleToStreamSession(session, lifecycle as unknown as Record<string, unknown>);
     setTileState(session.sourceId, "connecting", "Stream service accepted.");
     setDrawerStatus("Stream service accepted; waiting for answer.");
     void reportServiceStatus("connecting", "Stream service accepted; waiting for answer.", "stream_projection");
@@ -1309,11 +1325,7 @@ async function applyRuntimeStreamFrame(frame: Record<string, unknown>): Promise<
   }
   if (phase === STREAM_SESSION_LIFECYCLE_PHASE.REJECT) {
     const reason = String(record.reasonCode || record.reason || "service rejected").trim();
-    session.serviceRejected = true;
-    session.serviceAdmissionTimedOut = false;
-    session.runtimeBlockedReason = reason;
-    session.routePending = false;
-    session.routeState = "serviceRejected";
+    applyRuntimeStreamLifecycleToStreamSession(session, lifecycle as unknown as Record<string, unknown>);
     setTileState(session.sourceId, "unavailable", `Stream service rejected: ${reason}.`);
     setDrawerStatus(`Stream service rejected: ${reason}.`);
     void reportServiceStatus("unavailable", `Stream service rejected: ${reason}.`, "stream_projection");
@@ -1326,13 +1338,7 @@ async function applyRuntimeStreamFrame(frame: Record<string, unknown>): Promise<
       : null;
     if (!description) throw new Error("stream answer missing description");
     await applyBrowserStreamAnswer(session, description);
-    session.serviceAccepted = true;
-    session.serviceRejected = false;
-    session.serviceAdmissionTimedOut = false;
-    session.runtimeBlockedReason = "";
-    session.routePending = false;
-    session.routeState = "serviceAccepted";
-    session.answerReceived = true;
+    applyRuntimeStreamLifecycleToStreamSession(session, lifecycle as unknown as Record<string, unknown>);
     setTileState(session.sourceId, "connecting", "Live preview answer received.");
     setDrawerStatus("Stream answer received; waiting for media track.");
     void reportServiceStatus("connecting", "Stream answer received; waiting for media track.", "stream_projection");
@@ -1350,7 +1356,7 @@ async function applyRuntimeStreamFrame(frame: Record<string, unknown>): Promise<
   }
   if (phase === STREAM_SESSION_LIFECYCLE_PHASE.HEALTH) {
     const status = String(record.status || "").trim();
-    session.healthStatus = status;
+    applyRuntimeStreamLifecycleToStreamSession(session, lifecycle as unknown as Record<string, unknown>);
     if (status) setTileState(session.sourceId, status === "closed" ? "unavailable" : "connecting", `Stream ${status}.`);
   }
 }
@@ -1377,6 +1383,7 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
       debugInfo: runtimeAttachDebugInfo(window.location.origin),
       logPrefix: "nvr-ui",
       attachContext: nvrRuntimeAttachContext,
+      readModelOptions: runtimeReadModelOptions(),
       onPort: (port) => {
         runtimePort = port as MessagePort;
         runtimeAttached = false;
@@ -1395,20 +1402,27 @@ async function ensureRuntimePort(): Promise<MessagePort | null> {
         runtimePort = runtimeClient?.port as MessagePort | null;
         runtimeAttached = Boolean(runtimePort);
         absorbRuntimeSnapshot(snapshot);
-        runtimeSnapshotMaterializationPosture = deriveRuntimeMaterializationPosture(runtimeSnapshot || {}, {
-          materializationBudget: runtimeSnapshotMaterializationBudget || undefined,
-          consumerFloor: runtimeSnapshotConsumerFloor || undefined,
+        runtimeMaterializationPosture = deriveRuntimeMaterializationPosture(runtimeBaseline || {}, {
+          materializationBudget: runtimeMaterializationBudget || undefined,
+          consumerFloor: runtimeConsumerFloor || undefined,
         });
         refreshRuntimeProjectionLabels();
       },
+      onReadModel: (readModel) => {
+        runtimeReadModel = readModel;
+        refreshIdentityHandle();
+        renderNvrSettingsSummary();
+      },
       onMaterializationBudget: (budget) => {
-        runtimeSnapshotMaterializationBudget = (budget && typeof budget === "object") ? budget as Record<string, unknown> : null;
+        runtimeMaterializationBudget = (budget && typeof budget === "object") ? budget as Record<string, unknown> : null;
+        refreshRuntimeReadModel();
       },
       onConsumerFloor: (floor) => {
-        runtimeSnapshotConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
+        runtimeConsumerFloor = (floor && typeof floor === "object") ? floor as Record<string, unknown> : null;
+        refreshRuntimeReadModel();
       },
       onMaterializationPosture: (posture) => {
-        runtimeSnapshotMaterializationPosture = posture;
+        runtimeMaterializationPosture = posture;
       },
       onAttachPosture: (posture: Record<string, unknown>) => {
         if (!posture || posture.severity === "info") return;
@@ -1473,7 +1487,7 @@ async function reportServiceStatus(state: string, reason: string, stage: Runtime
   } catch {}
 }
 
-function runtimeAuthorityReady(posture: RuntimeAuthorityPosture | null | undefined): boolean {
+function runtimeAuthorityIsReady(posture: RuntimeAuthorityPosture | null | undefined): boolean {
   return posture?.ready === true || String(posture?.state || "").trim() === "ready";
 }
 
@@ -1517,14 +1531,14 @@ async function runtimeMediaTransportProfile(): Promise<RuntimeMediaTransportProf
   }
 }
 
-async function waitForRuntimeAuthorityReady(timeoutMs = RUNTIME_AUTHORITY_WAIT_TIMEOUT_MS): Promise<RuntimeAuthorityPosture | null> {
+async function waitForRuntimeAuthorityActionable(timeoutMs = RUNTIME_AUTHORITY_WAIT_TIMEOUT_MS): Promise<RuntimeAuthorityPosture | null> {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   let lastPosture: RuntimeAuthorityPosture | null = null;
   let reportedWaiting = false;
   while (Date.now() <= deadline) {
     const posture = await runtimeAuthorityPosture();
     lastPosture = posture;
-    if (runtimeAuthorityReady(posture)) return posture;
+    if (runtimeAuthorityIsReady(posture)) return posture;
     if (!reportedWaiting) {
       reportedWaiting = true;
       markRuntimeAuthorityWaiting(posture);
@@ -1634,7 +1648,7 @@ function localHostedServiceRecordsFrom(records: Record<string, unknown>[]): Reco
   return out;
 }
 
-function localGatewayExtraZoneScope(gatewayPk: string): RuntimeZoneScope | null {
+function localGatewayExtraDiscoveryScope(gatewayPk: string): RuntimeDiscoveryScope | null {
   const value = parseLocalJson(window.localStorage.getItem(ACCOUNT_GATEWAY_EXTRA_ZONES_KEY));
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const zones = (value as Record<string, unknown>)[gatewayPk];
@@ -1743,7 +1757,7 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
   }
   const gatewayPk = applianceGatewayPk(record);
   const browserDevicePk = localBrowserDevicePk(identity, deviceRecords);
-  const zoneScope = runtimeZoneScopeFromRecord(record, snapshot, gatewayPk) || localGatewayExtraZoneScope(gatewayPk);
+  const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk) || localGatewayExtraDiscoveryScope(gatewayPk);
   return {
     contextId: parseRuntimeContextId() || randomOpaqueId("nvr-context"),
     app: "nvr",
@@ -1753,7 +1767,7 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
     gatewayPk,
     servicePk: applianceDevicePk(record),
     service: "nvr",
-    ...(zoneScope ? { zoneScope } : {}),
+    ...(discoveryScope ? { discoveryScope } : {}),
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -1798,12 +1812,16 @@ function runtimeIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<s
     : {};
 }
 
-function normalizeRuntimeZoneScope(value: unknown): RuntimeZoneScope | null {
+function legacyDiscoveryScopeField(record: Record<string, unknown>, snake = false): unknown {
+  return record[snake ? LEGACY_DISCOVERY_SCOPE_SNAKE_FIELD : LEGACY_DISCOVERY_SCOPE_FIELD];
+}
+
+function normalizeRuntimeDiscoveryScope(value: unknown): RuntimeDiscoveryScope | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   const zoneId = String(source.zoneId || source.zone_id || source.key || source.zone || "").trim();
   if (!isRoutableRuntimeZoneId(zoneId)) return null;
-  const out: RuntimeZoneScope = { zoneId };
+  const out: RuntimeDiscoveryScope = { zoneId };
   const privacy = String(source.privacy || "").trim();
   if (privacy) out.privacy = privacy;
   const ttl = Number(source.ttl);
@@ -1818,17 +1836,17 @@ function isRoutableRuntimeZoneId(zoneId: string): boolean {
   return Boolean(id) && !id.startsWith("identity:") && id !== "runtime.local" && id !== "local";
 }
 
-function firstZoneScopeFromList(value: unknown): RuntimeZoneScope | null {
+function firstDiscoveryScopeFromList(value: unknown): RuntimeDiscoveryScope | null {
   if (!Array.isArray(value)) return null;
   for (const entry of value) {
-    const scope = normalizeRuntimeZoneScope(entry);
+    const scope = normalizeRuntimeDiscoveryScope(entry);
     if (scope) return scope;
     if (typeof entry === "string" && isRoutableRuntimeZoneId(entry)) return { zoneId: entry.trim() };
   }
   return null;
 }
 
-function zoneScopeFromRecord(record: Record<string, unknown> | null | undefined): RuntimeZoneScope | null {
+function discoveryScopeFromRecord(record: Record<string, unknown> | null | undefined): RuntimeDiscoveryScope | null {
   if (!record) return null;
   const facts = record.facts && typeof record.facts === "object" && !Array.isArray(record.facts)
     ? record.facts as Record<string, unknown>
@@ -1836,20 +1854,20 @@ function zoneScopeFromRecord(record: Record<string, unknown> | null | undefined)
   const health = record.health && typeof record.health === "object" && !Array.isArray(record.health)
     ? record.health as Record<string, unknown>
     : {};
-  return normalizeRuntimeZoneScope(record.zoneScope || record.zone_scope)
-    || normalizeRuntimeZoneScope(facts.zoneScope || facts.zone_scope)
-    || normalizeRuntimeZoneScope(health.zoneScope || health.zone_scope)
-    || normalizeRuntimeZoneScope({
+  return normalizeRuntimeDiscoveryScope(record.discoveryScope || record.discovery_scope || legacyDiscoveryScopeField(record) || legacyDiscoveryScopeField(record, true))
+    || normalizeRuntimeDiscoveryScope(facts.discoveryScope || facts.discovery_scope || legacyDiscoveryScopeField(facts) || legacyDiscoveryScopeField(facts, true))
+    || normalizeRuntimeDiscoveryScope(health.discoveryScope || health.discovery_scope || legacyDiscoveryScopeField(health) || legacyDiscoveryScopeField(health, true))
+    || normalizeRuntimeDiscoveryScope({
       zoneId: record.zoneId || record.zone_id || record.zoneKey || record.zone_key || record.zone,
       privacy: record.zonePrivacy || record.zone_privacy,
     })
-    || normalizeRuntimeZoneScope({
+    || normalizeRuntimeDiscoveryScope({
       zoneId: facts.zoneId || facts.zone_id || facts.zoneKey || facts.zone_key || facts.zone,
       privacy: facts.zonePrivacy || facts.zone_privacy,
     })
-    || firstZoneScopeFromList(record.zones)
-    || firstZoneScopeFromList(facts.zones)
-    || firstZoneScopeFromList(health.zones);
+    || firstDiscoveryScopeFromList(record.zones)
+    || firstDiscoveryScopeFromList(facts.zones)
+    || firstDiscoveryScopeFromList(health.zones);
 }
 
 function runtimeGatewayRecord(snapshot: RuntimeSnapshot | null, gatewayPk: string): Record<string, unknown> | null {
@@ -1869,7 +1887,7 @@ function runtimeGatewayRecord(snapshot: RuntimeSnapshot | null, gatewayPk: strin
   return null;
 }
 
-function runtimeZoneScopeFromSnapshot(snapshot: RuntimeSnapshot | null): RuntimeZoneScope | null {
+function runtimeDiscoveryScopeFromBaseline(snapshot: RuntimeSnapshot | null): RuntimeDiscoveryScope | null {
   const edge = snapshot?.edge && typeof snapshot.edge === "object" && !Array.isArray(snapshot.edge)
     ? snapshot.edge as Record<string, unknown>
     : {};
@@ -1879,23 +1897,23 @@ function runtimeZoneScopeFromSnapshot(snapshot: RuntimeSnapshot | null): Runtime
   const zones = shell.zones && typeof shell.zones === "object" && !Array.isArray(shell.zones)
     ? shell.zones as Record<string, unknown>
     : {};
-  return normalizeRuntimeZoneScope(edge.zoneScope || edge.zone_scope)
-    || normalizeRuntimeZoneScope({
+  return normalizeRuntimeDiscoveryScope(edge.discoveryScope || edge.discovery_scope || legacyDiscoveryScopeField(edge) || legacyDiscoveryScopeField(edge, true))
+    || normalizeRuntimeDiscoveryScope({
       zoneId: zones.activeZoneKey || zones.active_zone_key,
       privacy: "rawIds",
     })
-    || firstZoneScopeFromList(zones.joined)
-    || firstZoneScopeFromList(zones.zoneKeys || zones.zone_keys);
+    || firstDiscoveryScopeFromList(zones.joined)
+    || firstDiscoveryScopeFromList(zones.zoneKeys || zones.zone_keys);
 }
 
-function runtimeZoneScopeFromRecord(
+function runtimeDiscoveryScopeFromRecord(
   record: ManagedApplianceRecord,
   snapshot: RuntimeSnapshot | null,
   gatewayPk: string,
-): RuntimeZoneScope | null {
-  return zoneScopeFromRecord(record)
-    || zoneScopeFromRecord(runtimeGatewayRecord(snapshot, gatewayPk))
-    || runtimeZoneScopeFromSnapshot(snapshot);
+): RuntimeDiscoveryScope | null {
+  return discoveryScopeFromRecord(record)
+    || discoveryScopeFromRecord(runtimeGatewayRecord(snapshot, gatewayPk))
+    || runtimeDiscoveryScopeFromBaseline(snapshot);
 }
 
 function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: RuntimeSnapshot | null): RuntimeServiceContext {
@@ -1904,7 +1922,7 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
   const identity = runtimeIdentityFromSnapshot(snapshot);
   const contextId = parseRuntimeContextId() || randomOpaqueId("nvr-context");
   const browserDevicePk = String(identity.devicePk || identity.device_pk || identity.browserDevicePk || "").trim();
-  const zoneScope = runtimeZoneScopeFromRecord(record, snapshot, gatewayPk);
+  const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk);
   return {
     contextId,
     app: "nvr",
@@ -1914,7 +1932,7 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
     gatewayPk,
     servicePk,
     service: "nvr",
-    ...(zoneScope ? { zoneScope } : {}),
+    ...(discoveryScope ? { discoveryScope } : {}),
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -1958,12 +1976,13 @@ async function requestDirectEntryRuntimeContext(): Promise<RuntimeServiceContext
 
 async function persistRuntimeServiceContext(context: RuntimeServiceContext): Promise<RuntimeServiceContext> {
   runtimeServiceContext = context;
+  refreshRuntimeReadModel();
   refreshSummary(context);
   return context;
 }
 
-function runtimeZoneScope(): RuntimeZoneScope {
-  const runtimeScope = runtimeZoneScopeFromSnapshot(runtimeSnapshot) || runtimeServiceContext?.zoneScope || null;
+function runtimeDiscoveryScope(): RuntimeDiscoveryScope {
+  const runtimeScope = runtimeDiscoveryScopeFromBaseline(runtimeBaseline) || runtimeServiceContext?.discoveryScope || null;
   if (runtimeScope?.zoneId) {
     const ttl = Number(runtimeScope.ttl);
     const maxHops = Number(runtimeScope.maxHops);
@@ -1990,21 +2009,21 @@ async function ensureRuntimeSwarmEdgeForContext(
   options: SwarmEdgeAttachOptions = {},
 ): Promise<boolean> {
   const edgeEndpoint = localGatewayEdgeEndpoint(context.gatewayPk);
-  const rawZoneScope = context.zoneScope || localGatewayExtraZoneScope(context.gatewayPk);
-  if (!edgeEndpoint || !rawZoneScope?.zoneId) return false;
-  const zoneScope: RuntimeZoneScope = {
-    zoneId: rawZoneScope.zoneId,
-    privacy: rawZoneScope.privacy || "rawIds",
-    ttl: Number.isFinite(Number(rawZoneScope.ttl)) && Number(rawZoneScope.ttl) > 0 ? Number(rawZoneScope.ttl) : 30,
-    maxHops: Number.isFinite(Number(rawZoneScope.maxHops)) && Number(rawZoneScope.maxHops) > 0 ? Number(rawZoneScope.maxHops) : 2,
+  const rawDiscoveryScope = context.discoveryScope || localGatewayExtraDiscoveryScope(context.gatewayPk);
+  if (!edgeEndpoint || !rawDiscoveryScope?.zoneId) return false;
+  const discoveryScope: RuntimeDiscoveryScope = {
+    zoneId: rawDiscoveryScope.zoneId,
+    privacy: rawDiscoveryScope.privacy || "rawIds",
+    ttl: Number.isFinite(Number(rawDiscoveryScope.ttl)) && Number(rawDiscoveryScope.ttl) > 0 ? Number(rawDiscoveryScope.ttl) : 30,
+    maxHops: Number.isFinite(Number(rawDiscoveryScope.maxHops)) && Number(rawDiscoveryScope.maxHops) > 0 ? Number(rawDiscoveryScope.maxHops) : 2,
   };
   const target = [
     edgeEndpoint,
     "runtime-authority",
-    zoneScope.zoneId,
-    zoneScope.privacy || "",
-    String(zoneScope.ttl || ""),
-    String(zoneScope.maxHops || ""),
+    discoveryScope.zoneId,
+    discoveryScope.privacy || "",
+    String(discoveryScope.ttl || ""),
+    String(discoveryScope.maxHops || ""),
   ].join("|");
   if (swarmEdgeAttachRepairInFlight && swarmEdgeAttachRepairInFlightTarget === target) {
     return await swarmEdgeAttachRepairInFlight;
@@ -2012,7 +2031,8 @@ async function ensureRuntimeSwarmEdgeForContext(
   swarmEdgeAttachRepairInFlightTarget = target;
   swarmEdgeAttachRepairInFlight = (async () => {
     const now = Date.now();
-    const edgeDisconnected = Boolean(runtimeSnapshot?.edge && runtimeSnapshot.edge.connected !== true);
+    const edge = runtimeReadModel.edge || {};
+    const edgeDisconnected = Boolean(edge.state !== "unknown" && edge.connected !== true);
     if (swarmEdgeAttachRepairTarget !== target) {
       swarmEdgeAttachRepairTarget = target;
       swarmEdgeAttachRepairFailureCount = 0;
@@ -2028,7 +2048,7 @@ async function ensureRuntimeSwarmEdgeForContext(
       await runtimeCall("swarm.edge.attach", {
         payload: {
           swarmEdgeEndpoint: edgeEndpoint,
-          zoneScope,
+          [LEGACY_DISCOVERY_SCOPE_FIELD]: discoveryScope,
         },
       }, RUNTIME_WRITE_TIMEOUT_MS);
       swarmEdgeAttachRepairFailureCount = 0;
@@ -2596,7 +2616,7 @@ function projectionSortValue(record: RuntimeProjectionRecord): number {
 
 function nvrRuntimeProjectionRecord(channelId: string): RuntimeProjectionRecord | null {
   const servicePk = String(runtimeServiceContext?.servicePk || "").trim();
-  const records = runtimeProjectionRecords(runtimeSnapshot)
+  const records = runtimeProjectionRecords(runtimeBaseline)
     .filter((record) => String(record.channelId || "").trim() === channelId)
     .filter((record) => {
       const recordService = String(record.service || "").trim().toLowerCase();
@@ -2917,7 +2937,7 @@ async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
     const snapshot = await runtimeCall<RuntimeSnapshot>("runtime.snapshot.get", {}, RUNTIME_WRITE_TIMEOUT_MS);
     absorbRuntimeSnapshot(snapshot);
   } catch {}
-  return runtimeSnapshot;
+  return runtimeBaseline;
 }
 
 function setGridEmpty(title: string, body: string): void {
@@ -4045,23 +4065,23 @@ function renderProjectionSyncSummary(): string {
     const updated = compactTimestamp(freshness.updatedAt || record.retainedAt || record.updatedAt);
     return [channelId, [state, revision ? `rev ${revision}` : "", updated].filter(Boolean).join(" / ")];
   });
-  if (runtimeSnapshotConsumerFloor) {
+  if (runtimeConsumerFloor) {
     rows.push([
       "runtime.floor",
       [
-        String(runtimeSnapshotConsumerFloor.lagState || "unknown").trim() || "unknown",
-        runtimeSnapshotConsumerFloor.ackFloor ? `ack ${runtimeSnapshotConsumerFloor.ackFloor}` : "",
-        runtimeSnapshotConsumerFloor.witnessFloor ? `witness ${runtimeSnapshotConsumerFloor.witnessFloor}` : "",
+        String(runtimeConsumerFloor.lagState || "unknown").trim() || "unknown",
+        runtimeConsumerFloor.ackFloor ? `ack ${runtimeConsumerFloor.ackFloor}` : "",
+        runtimeConsumerFloor.witnessFloor ? `witness ${runtimeConsumerFloor.witnessFloor}` : "",
       ].filter(Boolean).join(" / "),
     ]);
   }
-  if (runtimeSnapshotMaterializationPosture) {
+  if (runtimeMaterializationPosture) {
     rows.push([
       "runtime.materialization",
       [
-        String(runtimeSnapshotMaterializationPosture.state || "unknown").trim() || "unknown",
-        runtimeSnapshotMaterializationPosture.budgetId ? `budget ${runtimeSnapshotMaterializationPosture.budgetId}` : "",
-        runtimeSnapshotMaterializationPosture.estimatedSnapshotBytes ? `${runtimeSnapshotMaterializationPosture.estimatedSnapshotBytes} bytes` : "",
+        String(runtimeMaterializationPosture.state || "unknown").trim() || "unknown",
+        runtimeMaterializationPosture.budgetId ? `budget ${runtimeMaterializationPosture.budgetId}` : "",
+        runtimeMaterializationPosture.estimatedSnapshotBytes ? `${runtimeMaterializationPosture.estimatedSnapshotBytes} bytes` : "",
       ].filter(Boolean).join(" / "),
     ]);
   }
@@ -4094,7 +4114,7 @@ function renderStoragePinIntentSummary(): string {
 }
 
 function renderRuntimePostureSummary(): string {
-  const shellState = deriveRuntimeShellState(runtimeSnapshot, { context: shellDeriveContext(), adapterLive: hasAllExpectedLiveTiles() });
+  const shellState = runtimeReadModel.shell as Record<string, any>;
   const resource = shellState.resource || {};
   const retention = shellState.retention || {};
   return `
@@ -4754,15 +4774,16 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
 
   renderRuntimeProjectionTiles(context);
 
-  const authority = await waitForRuntimeAuthorityReady();
-  if (!runtimeAuthorityReady(authority)) {
+  const authority = await waitForRuntimeAuthorityActionable();
+  if (!runtimeAuthorityIsReady(authority)) {
     closePeerConnection();
     markRuntimeAuthorityWaiting(authority);
     scheduleRuntimeAuthorityReconnect(runtimeAuthorityBlockedDetail(authority));
     return;
   }
 
-  const needsEdgeAttach = runtimeSnapshot?.edge?.connected !== true || runtimeSnapshot?.edge?.mode === "pendingAuthority";
+  const edgePosture = runtimeReadModel.edge || {};
+  const needsEdgeAttach = edgePosture.connected !== true || edgePosture.mode === "pendingAuthority";
   const edgeAttached = needsEdgeAttach
     ? await ensureRuntimeSwarmEdgeForContext(context, { force: true }).catch((error) => {
       const detail = String((error as Error)?.message || error);
@@ -4775,7 +4796,7 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
       return false;
     })
     : true;
-  if (!edgeAttached && runtimeSnapshot?.edge?.mode === "pendingAuthority") {
+  if (!edgeAttached && edgePosture.mode === "pendingAuthority") {
     markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: "Runtime authority is required before swarm edge attach." });
     scheduleRuntimeAuthorityReconnect("runtime edge attach is waiting for authority");
     return;
