@@ -95,9 +95,11 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.doesNotMatch(main, /Math\.random\(\) \* Math\.min\(1_000, baseMs\)/);
   assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
+  assert.match(main, /applyRuntimeStreamLifecycleToStreamSession/);
   assert.match(streamSession, /memberWritten/);
   assert.match(streamSession, /memberRead/);
   assert.match(streamSession, /routeAccepted/);
+  assert.match(streamSession, /export function applyRuntimeStreamLifecycleToStreamSession/);
   assert.doesNotMatch(main, /state === "accepted" \? "serviceAccepted" : state/);
   assert.match(main, /applyRuntimeActivationPostureFromSnapshot/);
   assert.match(main, /activationResolutions/);
@@ -109,7 +111,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /RUNTIME_MEDIA_TRANSPORT_PROFILE_GET/);
   assert.match(main, /runtimeMediaTransportProfile/);
   assert.doesNotMatch(main, /stun\.l\.google/);
-  assert.match(main, /iceServers:\s*\{/);
+  assert.doesNotMatch(main, /iceServers:\s*\{/);
   assert.equal(main.includes(retiredSignal), false);
   assert.equal(main.includes(retiredSignalRpc), false);
   assert.equal(main.includes(retiredCapability), false);
@@ -316,7 +318,7 @@ test("nvr ui uses shared summary row component instead of a local kv dialect", (
   assert.doesNotMatch(styles, /\.kv\b/);
 });
 
-test("first-party account centers use shared shell state and account-only actions", () => {
+test("first-party account centers use shared runtime read models and account-only actions", () => {
   const account = source("constitute-account/app.js");
   const gateway = source("constitute-gateway-ui/src/main.js");
   const gatewayRuntimeModel = source("constitute-gateway-ui/src/runtime-model.js");
@@ -325,12 +327,13 @@ test("first-party account centers use shared shell state and account-only action
   const all = [account, gateway, logging, nvr].join("\n");
 
   assert.match(account, /deriveRuntimeShellState/);
-  assert.match(gateway, /deriveRuntimeShellState/);
-  assert.match(logging, /deriveRuntimeShellState/);
-  assert.match(nvr, /deriveRuntimeShellState/);
+  assert.match(gateway, /prepareRuntimeReadModel/);
+  assert.match(gatewayRuntimeModel, /deriveRuntimeMaterializationPosture/);
+  assert.match(logging, /prepareRuntimeReadModel/);
+  assert.match(nvr, /prepareRuntimeReadModel/);
   assert.match(account, /runtimeResourceStatus/);
   assert.match(gatewayRuntimeModel, /Resource posture/);
-  assert.match(logging, /shellState\.resource\?\.state/);
+  assert.match(logging, /runtimeReadModel\.shell/);
   assert.match(nvr, /Runtime Posture/);
   assert.doesNotMatch(all, /Copy Identity ID/);
   assert.doesNotMatch(all, /account\.copy_identity/);
@@ -348,8 +351,13 @@ test("first-party account centers use shared shell state and account-only action
 test("nvr ui keeps live media state distinct from route delivery and inventory gaps", () => {
   const nvr = source("constitute-nvr-ui/src/main.ts");
 
-  assert.match(nvr, /if \(hasLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
+  assert.match(nvr, /function hasAllExpectedLiveTiles\(/);
+  assert.match(nvr, /function missingLiveSourceIds\(/);
+  assert.match(nvr, /function scheduleMissingSourceReconnect\(/);
+  assert.match(nvr, /if \(hasAllExpectedLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
   assert.match(nvr, /const markRenderLive = \(evidence = reportRenderReadiness\(session, tile\.video\)\) => \{[\s\S]*?setTileState\(sourceId, "live"/);
+  assert.match(nvr, /waiting for remaining live preview streams/);
+  assert.match(nvr, /Retrying missing live preview stream/);
   assert.match(nvr, /evidence\.state !== SWARM\.MEDIA_FULFILLMENT_STATE\.USABLE/);
   assert.match(nvr, /tile\.video\.addEventListener\("playing", markRenderLive, \{ once: true \}\)/);
   assert.match(nvr, /track\.readyState === "live"[\s\S]*?markPendingRender\(\);[\s\S]*?window\.setTimeout\(markRenderLive, 1_000\)/);
