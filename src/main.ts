@@ -59,7 +59,7 @@ import {
   runtimeRouteObservationPosture,
   runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
 } from "constitute-ui/runtime-stream-session";
-import { preparedServiceRegistryServices } from "constitute-ui";
+import { prepareServiceHostFabricPosture, preparedServiceRegistryServices } from "constitute-ui";
 import {
   MEDIA_RENDER_BLOCKED_GRACE_MS,
   MEDIA_RENDER_WAITING_GRACE_MS,
@@ -139,6 +139,12 @@ type RuntimeServiceContext = {
   servicePk: string;
   service: string;
   discoveryScope?: RuntimeDiscoveryScope;
+  hostFabric?: Record<string, unknown>;
+  legacyPathFallback?: {
+    state: "legacyPathFallback";
+    reason: string;
+    sourceRefs: string[];
+  };
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
@@ -1551,7 +1557,17 @@ async function waitForRuntimeAuthorityActionable(timeoutMs = RUNTIME_AUTHORITY_W
   return lastPosture;
 }
 
-function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
+function runtimeShellIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<string, unknown> {
+  const readModel = prepareRuntimeReadModel((snapshot || {}) as Record<string, unknown>, runtimeReadModelOptions(runtimeServiceContext));
+  const shell = readModel.shell && typeof readModel.shell === "object"
+    ? readModel.shell as Record<string, unknown>
+    : {};
+  return shell.identity && typeof shell.identity === "object"
+    ? shell.identity as Record<string, unknown>
+    : {};
+}
+
+function rawSnapshotNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : null;
@@ -1561,7 +1577,15 @@ function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean 
   return identity?.linked === false;
 }
 
+function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (preparedIdentity.linked === true) return false;
+  return rawSnapshotNeedsIdentity(snapshot);
+}
+
 function accountRuntimeIdentityResolved(snapshot: RuntimeSnapshot | null): boolean {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (typeof preparedIdentity.linked === "boolean") return true;
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : null;
@@ -1741,7 +1765,8 @@ function localBrowserDevicePk(identity: Record<string, unknown> | null, deviceRe
 
 function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): RuntimeServiceContext | null {
   const identity = localAccountIdentity();
-  const identityId = String(identity?.identityId || identity?.id || "").trim();
+  const snapshotIdentity = runtimeIdentityFromSnapshot(snapshot);
+  const identityId = String(identity?.identityId || identity?.id || snapshotIdentity.identityId || snapshotIdentity.id || "").trim();
   if (!identityId) return null;
   const deviceRecords = localStorageRecordList(ACCOUNT_DEVICE_CACHE_KEY);
   const candidates = [...deviceRecords, ...localHostedServiceRecordsFrom(deviceRecords), ...localGatewayHostedSnapshots()]
@@ -1756,7 +1781,8 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
     record = mergeNvrDirectoryRecords(record, candidate as ManagedApplianceRecord);
   }
   const gatewayPk = applianceGatewayPk(record);
-  const browserDevicePk = localBrowserDevicePk(identity, deviceRecords);
+  const browserDevicePk = localBrowserDevicePk(identity, deviceRecords)
+    || String(snapshotIdentity.devicePk || snapshotIdentity.device_pk || snapshotIdentity.browserDevicePk || "").trim();
   const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk) || localGatewayExtraDiscoveryScope(gatewayPk);
   return {
     contextId: parseRuntimeContextId() || randomOpaqueId("nvr-context"),
@@ -1768,6 +1794,11 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
     servicePk: applianceDevicePk(record),
     service: "nvr",
     ...(discoveryScope ? { discoveryScope } : {}),
+    legacyPathFallback: {
+      state: "legacyPathFallback",
+      reason: "account runtime snapshot unavailable; retained account cache selected service context",
+      sourceRefs: ["localStorage:swarm.deviceCache", "localStorage:constitute.gatewayHostedSnapshots"],
+    },
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -1782,7 +1813,7 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
   let snapshot = await currentRuntimeSnapshot();
   let record = directEntryNvrServiceRecord(snapshot);
   if (record) return { snapshot, record };
-  if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
+  if (localCachedNvrRuntimeContext(snapshot)) return { snapshot, record: null };
 
   const deadline = Date.now() + DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS;
   let identityResolvedAt = 0;
@@ -1790,7 +1821,7 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
     snapshot = await currentRuntimeSnapshot();
     record = directEntryNvrServiceRecord(snapshot);
     if (record) return { snapshot, record };
-    if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
+    if (localCachedNvrRuntimeContext(snapshot)) return { snapshot, record: null };
     if (accountRuntimeIdentityResolved(snapshot)) {
       identityResolvedAt ||= Date.now();
       if (Date.now() - identityResolvedAt >= DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS) {
@@ -1804,6 +1835,8 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
 }
 
 function runtimeIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<string, unknown> {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (preparedIdentity.linked === true) return preparedIdentity;
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : {};
@@ -1923,6 +1956,9 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
   const contextId = parseRuntimeContextId() || randomOpaqueId("nvr-context");
   const browserDevicePk = String(identity.devicePk || identity.device_pk || identity.browserDevicePk || "").trim();
   const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk);
+  const hostFabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
+    ? prepareServiceHostFabricPosture(record.hostFabric as Record<string, unknown>)
+    : null;
   return {
     contextId,
     app: "nvr",
@@ -1933,6 +1969,13 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
     servicePk,
     service: "nvr",
     ...(discoveryScope ? { discoveryScope } : {}),
+    ...(hostFabric ? { hostFabric } : {
+      legacyPathFallback: {
+        state: "legacyPathFallback",
+        reason: "runtime service catalog is missing host-fabric posture; using transition service directory",
+        sourceRefs: ["runtime.serviceCatalog", "runtime.managedAppliances"],
+      },
+    }),
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -1970,6 +2013,10 @@ async function requestDirectEntryRuntimeContext(): Promise<RuntimeServiceContext
   const gatewayPk = applianceGatewayPk(record);
   if (!servicePk || !gatewayPk) {
     throw runtimeContextError("runtime_directory", "Security Cameras runtime record did not include service and gateway identity");
+  }
+  const catalogBlockedReason = nvrServiceCatalogBlockedReason(record);
+  if (catalogBlockedReason) {
+    throw runtimeContextError("runtime_directory", catalogBlockedReason);
   }
   return contextFromRuntimeRecord(record, snapshot);
 }
@@ -2881,12 +2928,14 @@ function mergeNvrDirectoryRecords(
     label: String(catalogRecord.label || catalogRecord.deviceLabel || richerRecord.label || richerRecord.deviceLabel || "Security Cameras"),
     displayName: String(catalogRecord.displayName || catalogRecord.label || richerRecord.displayName || richerRecord.deviceLabel || "Security Cameras"),
     hostGatewayPk: String(richerRecord.hostGatewayPk || catalogRecord.hostGatewayPk || catalogRecord.gatewayPk || ""),
+    hostFabric: catalogRecord.hostFabric || richerRecord.hostFabric,
     updatedAt: Math.max(applianceUpdatedAt(catalogRecord), applianceUpdatedAt(richerRecord)),
   };
 }
 
 function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
   const catalogRecord = directEntryNvrServiceCatalogRecord(snapshot);
+  if (!catalogRecord) return null;
   const records = snapshotManagedApplianceRecords(snapshot);
   const services = records
     .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
@@ -2905,7 +2954,7 @@ function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedA
   if (nvrRecordPreparedSourceCount(richerRecord) > nvrRecordPreparedSourceCount(catalogRecord)) {
     return mergeNvrDirectoryRecords(richerRecord, catalogRecord);
   }
-  return catalogRecord || richerRecord;
+  return catalogRecord;
 }
 
 function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
@@ -2930,6 +2979,26 @@ function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): M
     serviceVersion: String(record.serviceVersion || record.version || ""),
     updatedAt: Number(record.updatedAt || snapshot?.updatedAt || Date.now()),
   };
+}
+
+function nvrServiceCatalogBlockedReason(record: ManagedApplianceRecord): string {
+  const legacyFallback = record.legacyPathFallback && typeof record.legacyPathFallback === "object" && !Array.isArray(record.legacyPathFallback)
+    ? record.legacyPathFallback as Record<string, unknown>
+    : null;
+  if (legacyFallback) {
+    return String(legacyFallback.reason || "Security Cameras service is projected from a quarantined legacy path.").trim();
+  }
+  const fabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
+    ? prepareServiceHostFabricPosture(record.hostFabric as Record<string, unknown>)
+    : null;
+  if (!fabric) return "";
+  const state = String(fabric.state || "").trim().toLowerCase();
+  const blockedReasons = Array.isArray(fabric.blockedReasons)
+    ? fabric.blockedReasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+    : [];
+  if (blockedReasons.length > 0) return `Security Cameras host fabric blocked: ${blockedReasons.slice(0, 2).join(", ")}`;
+  if (!state || state === "ready" || state === "available" || state === "live") return "";
+  return `Security Cameras host fabric is ${state}.`;
 }
 
 async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
@@ -4117,6 +4186,8 @@ function renderRuntimePostureSummary(): string {
   const shellState = runtimeReadModel.shell as Record<string, any>;
   const resource = shellState.resource || {};
   const retention = shellState.retention || {};
+  const target = runtimeReadModel.target as Record<string, any> || {};
+  const fabric = runtimeReadModel.fabric as Record<string, any> || {};
   return `
     <section class="nestedPanel runtimePosturePanel">
       <div class="summaryLabel">Runtime Posture</div>
@@ -4125,6 +4196,8 @@ function renderRuntimePostureSummary(): string {
         ["Cleanup", resource.cleanupAllowed ? "allowed" : String(resource.cleanupReason || "blocked")],
         ["Retention", String(retention.state || "unknown")],
         ["Release", retention.releaseRequired ? String(retention.reason || "blocked") : "ready"],
+        ["Target", [String(target.state || "pending"), String(target.targetRef || "")].filter(Boolean).join(" / ")],
+        ["Fabric", [String(fabric.state || "pending"), String(fabric.planId || "")].filter(Boolean).join(" / ")],
       ])}
     </section>
   `;
@@ -4753,6 +4826,9 @@ async function loadRuntimeServiceContext(): Promise<RuntimeServiceContext> {
 function isDirectEntryIdleRuntimeFailure(error: RuntimeContextError): boolean {
   const detail = String(error.detail || "").toLowerCase();
   return detail.includes("no security cameras service is available")
+    || detail.includes("msa host-fabric posture")
+    || detail.includes("host fabric blocked")
+    || detail.includes("host fabric is")
     || detail.includes("shared browser runtime unavailable")
     || detail.includes("runtime broker unavailable")
     || detail.includes("runtime broker missing")
@@ -5253,6 +5329,10 @@ async function activateRuntimeServiceContext(context: RuntimeServiceContext, sou
   directEntryRepairAttemptCount = 0;
   runtimeServiceContext = await persistRuntimeServiceContext(context);
   appendLog(`runtime context loaded for service ${pkLabel(runtimeServiceContext.servicePk)}${source ? ` (${source})` : ""}`);
+  if (runtimeServiceContext.legacyPathFallback) {
+    appendLog(`legacyPathFallback ${runtimeServiceContext.legacyPathFallback.reason}`);
+    void reportServiceStatus("degraded", runtimeServiceContext.legacyPathFallback.reason, "legacyPathFallback");
+  }
   markStartupStage("nvr.runtime-context.loaded");
   refreshSummary(runtimeServiceContext);
   applyNvrRuntimeProjections();
