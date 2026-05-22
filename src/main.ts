@@ -139,6 +139,7 @@ type RuntimeServiceContext = {
   servicePk: string;
   service: string;
   discoveryScope?: RuntimeDiscoveryScope;
+  hostFabric?: Record<string, unknown>;
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
@@ -1933,6 +1934,7 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
     servicePk,
     service: "nvr",
     ...(discoveryScope ? { discoveryScope } : {}),
+    ...(record.hostFabric && typeof record.hostFabric === "object" ? { hostFabric: record.hostFabric as Record<string, unknown> } : {}),
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -1970,6 +1972,10 @@ async function requestDirectEntryRuntimeContext(): Promise<RuntimeServiceContext
   const gatewayPk = applianceGatewayPk(record);
   if (!servicePk || !gatewayPk) {
     throw runtimeContextError("runtime_directory", "Security Cameras runtime record did not include service and gateway identity");
+  }
+  const catalogBlockedReason = nvrServiceCatalogBlockedReason(record);
+  if (catalogBlockedReason) {
+    throw runtimeContextError("runtime_directory", catalogBlockedReason);
   }
   return contextFromRuntimeRecord(record, snapshot);
 }
@@ -2881,12 +2887,14 @@ function mergeNvrDirectoryRecords(
     label: String(catalogRecord.label || catalogRecord.deviceLabel || richerRecord.label || richerRecord.deviceLabel || "Security Cameras"),
     displayName: String(catalogRecord.displayName || catalogRecord.label || richerRecord.displayName || richerRecord.deviceLabel || "Security Cameras"),
     hostGatewayPk: String(richerRecord.hostGatewayPk || catalogRecord.hostGatewayPk || catalogRecord.gatewayPk || ""),
+    hostFabric: catalogRecord.hostFabric || richerRecord.hostFabric,
     updatedAt: Math.max(applianceUpdatedAt(catalogRecord), applianceUpdatedAt(richerRecord)),
   };
 }
 
 function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
   const catalogRecord = directEntryNvrServiceCatalogRecord(snapshot);
+  if (!catalogRecord) return null;
   const records = snapshotManagedApplianceRecords(snapshot);
   const services = records
     .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
@@ -2905,7 +2913,7 @@ function directEntryNvrServiceRecord(snapshot: RuntimeSnapshot | null): ManagedA
   if (nvrRecordPreparedSourceCount(richerRecord) > nvrRecordPreparedSourceCount(catalogRecord)) {
     return mergeNvrDirectoryRecords(richerRecord, catalogRecord);
   }
-  return catalogRecord || richerRecord;
+  return catalogRecord;
 }
 
 function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): ManagedApplianceRecord | null {
@@ -2930,6 +2938,20 @@ function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): M
     serviceVersion: String(record.serviceVersion || record.version || ""),
     updatedAt: Number(record.updatedAt || snapshot?.updatedAt || Date.now()),
   };
+}
+
+function nvrServiceCatalogBlockedReason(record: ManagedApplianceRecord): string {
+  const fabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
+    ? record.hostFabric as Record<string, unknown>
+    : null;
+  if (!fabric) return "Security Cameras service is missing MSA host-fabric posture.";
+  const state = String(fabric.state || fabric.fulfillmentState || fabric.lifecycleState || "").trim().toLowerCase();
+  const blockedReasons = Array.isArray(fabric.blockedReasons)
+    ? fabric.blockedReasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+    : [];
+  if (blockedReasons.length > 0) return `Security Cameras host fabric blocked: ${blockedReasons.slice(0, 2).join(", ")}`;
+  if (!state || state === "ready" || state === "available" || state === "live") return "";
+  return `Security Cameras host fabric is ${state}.`;
 }
 
 async function currentRuntimeSnapshot(): Promise<RuntimeSnapshot | null> {
@@ -4753,6 +4775,9 @@ async function loadRuntimeServiceContext(): Promise<RuntimeServiceContext> {
 function isDirectEntryIdleRuntimeFailure(error: RuntimeContextError): boolean {
   const detail = String(error.detail || "").toLowerCase();
   return detail.includes("no security cameras service is available")
+    || detail.includes("msa host-fabric posture")
+    || detail.includes("host fabric blocked")
+    || detail.includes("host fabric is")
     || detail.includes("shared browser runtime unavailable")
     || detail.includes("runtime broker unavailable")
     || detail.includes("runtime broker missing")

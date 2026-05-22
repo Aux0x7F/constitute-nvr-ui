@@ -14,6 +14,7 @@ type RuntimeHarnessOptions = {
   edgeZoneScope?: Record<string, unknown> | null;
   edgeConnected?: boolean;
   includeNvrService?: boolean;
+  includeServiceCatalog?: boolean;
   delayedServiceAfterSnapshotGets?: number;
   localAccountCacheFallback?: boolean;
   localAccountCacheSources?: boolean;
@@ -44,8 +45,10 @@ function runtimeSnapshot({
   edgeZoneScope = { zoneId: "zone-a", privacy: "rawIds", ttl: 30, maxHops: 2 },
   edgeConnected = true,
   includeNvrService = true,
+  includeServiceCatalog = includeNvrService,
 }: RuntimeHarnessOptions = {}) {
   const hasNvrService = linked && includeNvrService;
+  const hasCatalogService = linked && includeServiceCatalog;
   const projections = includeProjections ? {
     "nvr.health": projectionRecord("nvr.health", {
       nodePath: "health",
@@ -164,13 +167,18 @@ function runtimeSnapshot({
     } : { owned: [], granted: [], discoverable: [] },
     serviceCatalog: {
       updatedAt: Date.now(),
-      services: hasNvrService ? [
+      services: hasCatalogService ? [
         {
           service: "nvr",
           servicePk: NVR_SERVICE_PK,
           hostGatewayPk: GATEWAY_PK,
           label: "Security Cameras",
           health: { status: "ready", configuredSources: 2 },
+          hostFabric: {
+            state: "ready",
+            associationHandoffRef: `handoff:gateway:${GATEWAY_PK}:initial-owner`,
+            blockedReasons: [],
+          },
         },
       ] : [],
     },
@@ -682,6 +690,30 @@ test("direct entry materializes gateway-hosted camera facts before projection re
   await expect(page.locator(".cameraTitle")).toContainText(["Carport", "Front Door"]);
   await expect(page.locator("#popServices")).toContainText("Security Cameras (2 cameras)");
   await expect(page.locator(".emptyState")).toHaveCount(0);
+});
+
+test("direct entry blocks legacy hosted records without service catalog posture", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    includeProjections: false,
+    includeNvrService: true,
+    includeServiceCatalog: false,
+    hostedCameraCount: 2,
+    hostedFacts: {
+      configuredSources: 2,
+      sources: ["reolink-ec-71-db-32-0a-8f", "xm-192-168-0-201"],
+    },
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator(".cameraTile")).toHaveCount(0);
+  await expect(page.locator(".emptyState")).toContainText("Opening Security Cameras");
+  await page.waitForTimeout(750);
+  const streamOpenCount = await page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0;
+  });
+  expect(streamOpenCount).toBe(0);
 });
 
 test("direct entry leaves stream route fields to runtime when hosted facts carry identity-local zones", async ({ page }) => {
