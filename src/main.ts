@@ -140,6 +140,11 @@ type RuntimeServiceContext = {
   service: string;
   discoveryScope?: RuntimeDiscoveryScope;
   hostFabric?: Record<string, unknown>;
+  legacyPathFallback?: {
+    state: "legacyPathFallback";
+    reason: string;
+    sourceRefs: string[];
+  };
   display?: RuntimeServiceDisplay;
   createdAt: number;
   expiresAt: number;
@@ -1769,6 +1774,11 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
     servicePk: applianceDevicePk(record),
     service: "nvr",
     ...(discoveryScope ? { discoveryScope } : {}),
+    legacyPathFallback: {
+      state: "legacyPathFallback",
+      reason: "account runtime snapshot unavailable; retained account cache selected service context",
+      sourceRefs: ["localStorage:swarm.deviceCache", "localStorage:constitute.gatewayHostedSnapshots"],
+    },
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -5278,6 +5288,10 @@ async function activateRuntimeServiceContext(context: RuntimeServiceContext, sou
   directEntryRepairAttemptCount = 0;
   runtimeServiceContext = await persistRuntimeServiceContext(context);
   appendLog(`runtime context loaded for service ${pkLabel(runtimeServiceContext.servicePk)}${source ? ` (${source})` : ""}`);
+  if (runtimeServiceContext.legacyPathFallback) {
+    appendLog(`legacyPathFallback ${runtimeServiceContext.legacyPathFallback.reason}`);
+    void reportServiceStatus("degraded", runtimeServiceContext.legacyPathFallback.reason, "legacyPathFallback");
+  }
   markStartupStage("nvr.runtime-context.loaded");
   refreshSummary(runtimeServiceContext);
   applyNvrRuntimeProjections();
