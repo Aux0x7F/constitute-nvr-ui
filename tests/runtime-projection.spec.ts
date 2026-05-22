@@ -15,6 +15,7 @@ type RuntimeHarnessOptions = {
   edgeConnected?: boolean;
   includeNvrService?: boolean;
   includeServiceCatalog?: boolean;
+  catalogLegacyFallback?: boolean;
   delayedServiceAfterSnapshotGets?: number;
   localAccountCacheFallback?: boolean;
   localAccountCacheSources?: boolean;
@@ -46,6 +47,7 @@ function runtimeSnapshot({
   edgeConnected = true,
   includeNvrService = true,
   includeServiceCatalog = includeNvrService,
+  catalogLegacyFallback = false,
 }: RuntimeHarnessOptions = {}) {
   const hasNvrService = linked && includeNvrService;
   const hasCatalogService = linked && includeServiceCatalog;
@@ -179,6 +181,13 @@ function runtimeSnapshot({
             associationHandoffRef: `handoff:gateway:${GATEWAY_PK}:initial-owner`,
             blockedReasons: [],
           },
+          ...(catalogLegacyFallback ? {
+            legacyPathFallback: {
+              state: "legacyPathFallback",
+              reason: "retained hosted-service cache used",
+              sourceRefs: ["runtime.shared.state.hostedGatewaySnapshots"],
+            },
+          } : {}),
         },
       ] : [],
     },
@@ -709,6 +718,30 @@ test("direct entry blocks legacy hosted records without service catalog posture"
   await expect(page.locator(".cameraTile")).toHaveCount(0);
   await expect(page.locator(".emptyState")).toContainText("Opening Security Cameras");
   await page.waitForTimeout(750);
+  const streamOpenCount = await page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0;
+  });
+  expect(streamOpenCount).toBe(0);
+});
+
+test("direct entry blocks service catalog records marked as legacy fallback", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    includeProjections: false,
+    includeNvrService: true,
+    includeServiceCatalog: true,
+    catalogLegacyFallback: true,
+    hostedCameraCount: 2,
+    hostedFacts: {
+      configuredSources: 2,
+      sources: ["reolink-ec-71-db-32-0a-8f", "xm-192-168-0-201"],
+    },
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator(".cameraTile")).toHaveCount(0);
+  await expect(page.locator(".emptyState")).toContainText("retained hosted-service cache used");
   const streamOpenCount = await page.evaluate(() => {
     const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
     return probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0;

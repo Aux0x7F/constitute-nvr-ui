@@ -2951,6 +2951,12 @@ function directEntryNvrServiceCatalogRecord(snapshot: RuntimeSnapshot | null): M
 }
 
 function nvrServiceCatalogBlockedReason(record: ManagedApplianceRecord): string {
+  const legacyFallback = record.legacyPathFallback && typeof record.legacyPathFallback === "object" && !Array.isArray(record.legacyPathFallback)
+    ? record.legacyPathFallback as Record<string, unknown>
+    : null;
+  if (legacyFallback) {
+    return String(legacyFallback.reason || "Security Cameras service is projected from a quarantined legacy path.").trim();
+  }
   const fabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
     ? record.hostFabric as Record<string, unknown>
     : null;
