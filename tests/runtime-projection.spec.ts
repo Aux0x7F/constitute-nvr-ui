@@ -15,9 +15,13 @@ type RuntimeHarnessOptions = {
   edgeConnected?: boolean;
   includeNvrService?: boolean;
   includeServiceCatalog?: boolean;
+  forceServiceProjectionWhenUnlinked?: boolean;
   catalogLegacyFallback?: boolean;
+  catalogHostFabric?: Record<string, unknown> | false | null;
   delayedServiceAfterSnapshotGets?: number;
   localAccountCacheFallback?: boolean;
+  localAccountCacheDelayMs?: number;
+  localAccountCacheIdentity?: boolean;
   localAccountCacheSources?: boolean;
   pendingStreamRoute?: boolean;
   edgeAttachAuthorityWait?: boolean;
@@ -47,10 +51,20 @@ function runtimeSnapshot({
   edgeConnected = true,
   includeNvrService = true,
   includeServiceCatalog = includeNvrService,
+  forceServiceProjectionWhenUnlinked = false,
   catalogLegacyFallback = false,
+  catalogHostFabric,
 }: RuntimeHarnessOptions = {}) {
-  const hasNvrService = linked && includeNvrService;
-  const hasCatalogService = linked && includeServiceCatalog;
+  const serviceProjectionAllowed = linked || forceServiceProjectionWhenUnlinked;
+  const hasNvrService = serviceProjectionAllowed && includeNvrService;
+  const hasCatalogService = serviceProjectionAllowed && includeServiceCatalog;
+  const hostFabric = catalogHostFabric === undefined
+    ? {
+      state: "ready",
+      associationHandoffRef: `handoff:gateway:${GATEWAY_PK}:initial-owner`,
+      blockedReasons: [],
+    }
+    : catalogHostFabric;
   const projections = includeProjections ? {
     "nvr.health": projectionRecord("nvr.health", {
       nodePath: "health",
@@ -176,11 +190,7 @@ function runtimeSnapshot({
           hostGatewayPk: GATEWAY_PK,
           label: "Security Cameras",
           health: { status: "ready", configuredSources: 2 },
-          hostFabric: {
-            state: "ready",
-            associationHandoffRef: `handoff:gateway:${GATEWAY_PK}:initial-owner`,
-            blockedReasons: [],
-          },
+          ...(hostFabric && typeof hostFabric === "object" ? { hostFabric } : {}),
           ...(catalogLegacyFallback ? {
             legacyPathFallback: {
               state: "legacyPathFallback",
@@ -201,22 +211,24 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
   const delayedSnapshot = options.delayedServiceAfterSnapshotGets
     ? runtimeSnapshot({ ...options, includeNvrService: true })
     : null;
-  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheSources, pendingStreamRoute, edgeAttachAuthorityWait, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
-    if (localAccountCacheFallback) {
+  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheDelayMs, localAccountCacheIdentity, localAccountCacheSources, pendingStreamRoute, edgeAttachAuthorityWait, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
+    const seedLocalAccountCache = () => {
       const ts = Date.now();
       const includeSources = localAccountCacheSources !== false;
-      window.localStorage.setItem("swarm.identityCache", JSON.stringify({
-        ts,
-        records: [
-          {
-            identityId: "identity-001",
-            label: "operator",
-            devicePks: [browserPk, gatewayPk],
-            updatedAt: ts,
-            expiresAt: ts + 86_400_000,
-          },
-        ],
-      }));
+      if (localAccountCacheIdentity !== false) {
+        window.localStorage.setItem("swarm.identityCache", JSON.stringify({
+          ts,
+          records: [
+            {
+              identityId: "identity-001",
+              label: "operator",
+              devicePks: [browserPk, gatewayPk],
+              updatedAt: ts,
+              expiresAt: ts + 86_400_000,
+            },
+          ],
+        }));
+      }
       window.localStorage.setItem("swarm.deviceCache", JSON.stringify({
         ts,
         records: [
@@ -260,6 +272,14 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
       window.localStorage.setItem("constitute.gateway.extraZones", JSON.stringify({
         [gatewayPk]: ["zone-a"],
       }));
+    };
+    if (localAccountCacheFallback) {
+      const delayMs = Math.max(0, Number(localAccountCacheDelayMs || 0));
+      if (delayMs > 0) {
+        window.setTimeout(seedLocalAccountCache, delayMs);
+      } else {
+        seedLocalAccountCache();
+      }
     }
 
     const state = {
@@ -517,6 +537,8 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
     delayedServiceAfterSnapshotGets: options.delayedServiceAfterSnapshotGets || 0,
     earlyStreamAnswer: options.earlyStreamAnswer === true ? true : options.earlyStreamAnswer === "frameAfterResponse" ? "frameAfterResponse" : false,
     localAccountCacheFallback: options.localAccountCacheFallback === true,
+    localAccountCacheDelayMs: options.localAccountCacheDelayMs || 0,
+    localAccountCacheIdentity: options.localAccountCacheIdentity !== false,
     localAccountCacheSources: options.localAccountCacheSources !== false,
     authorityPostures: options.authorityPostures || [],
     pendingStreamRoute: options.pendingStreamRoute === true,
@@ -747,6 +769,50 @@ test("direct entry blocks service catalog records marked as legacy fallback", as
     return probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0;
   });
   expect(streamOpenCount).toBe(0);
+});
+
+test("direct entry uses current service catalog while host-fabric posture hydrates", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    includeProjections: false,
+    includeNvrService: true,
+    includeServiceCatalog: true,
+    catalogHostFabric: false,
+    hostedCameraCount: 2,
+    hostedFacts: {
+      configuredSources: 2,
+      sources: ["reolink-ec-71-db-32-0a-8f", "xm-192-168-0-201"],
+      cameraDevices: [
+        {
+          sourceId: "reolink-ec-71-db-32-0a-8f",
+          name: "Carport",
+          enabled: true,
+          ptzCapable: true,
+        },
+        {
+          sourceId: "xm-192-168-0-201",
+          name: "Front Door",
+          enabled: true,
+          ptzCapable: false,
+        },
+      ],
+    },
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator(".cameraTile")).toHaveCount(2);
+  await expect(page.locator(".cameraTitle")).toContainText(["Carport", "Front Door"]);
+  await expect(page.locator("body")).not.toContainText("missing MSA host-fabric posture");
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>>; statuses: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return {
+      streamOpenCount: probe?.intents.filter((intent) => intent.type === "runtime.stream.open").length || 0,
+      degraded: probe?.statuses.some((status) => String(status.reason || "").includes("missing host-fabric posture")) || false,
+    };
+  })).toEqual({
+    streamOpenCount: 1,
+    degraded: true,
+  });
 });
 
 test("direct entry leaves stream route fields to runtime when hosted facts carry identity-local zones", async ({ page }) => {
@@ -995,13 +1061,47 @@ test("direct entry without linked identity stays in prepared account-required st
 
   await page.goto("/");
 
-  await expect(page.locator(".emptyState")).toContainText("Account Required");
+  await expect(page.locator(".emptyState")).toContainText("Account Required", { timeout: 20_000 });
   await expect(page.locator(".emptyState")).toContainText("Open Account Center");
   const queued = await page.evaluate(() => {
     const probe = (window as Window & { __runtimeProbe?: { frames: Array<Record<string, unknown>> } }).__runtimeProbe;
     return probe?.frames.length || 0;
   });
   expect(queued).toBe(0);
+});
+
+test("direct entry waits for retained account cache while raw snapshot is unlinked", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    linked: false,
+    localAccountCacheFallback: true,
+    localAccountCacheDelayMs: 1_000,
+    authorityPostures: [{ state: "ready", ready: true, devicePk: BROWSER_PK }],
+  });
+
+  await page.goto("/");
+
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return Boolean(probe?.intents.find((intent) => intent.type === "runtime.stream.open"));
+  })).toBe(true);
+  await expect(page.locator("body")).not.toContainText("Account Required");
+});
+
+test("direct entry trusts prepared read-model identity over raw unlinked snapshot shell", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    linked: false,
+    forceServiceProjectionWhenUnlinked: true,
+    localAccountCacheFallback: true,
+    authorityPostures: [{ state: "ready", ready: true, devicePk: BROWSER_PK }],
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator("body")).not.toContainText("Account Required");
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return Boolean(probe?.intents.find((intent) => intent.type === "runtime.stream.open"));
+  })).toBe(true);
 });
 
 test("direct entry uses retained account cache when account worker snapshot is unlinked", async ({ page }) => {
@@ -1040,6 +1140,25 @@ test("direct entry uses retained account cache when account worker snapshot is u
     }),
   }));
   expect((edgeAttach as Record<string, unknown>).memberRef).toBeUndefined();
+});
+
+test("direct entry uses runtime identity with retained device cache when local identity cache is empty", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    includeNvrService: false,
+    includeServiceCatalog: false,
+    includeProjections: false,
+    localAccountCacheFallback: true,
+    localAccountCacheIdentity: false,
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator("body")).not.toContainText("Account Required");
+  await expect(page.locator(".cameraTile")).toHaveCount(2);
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return Boolean(probe?.intents.find((intent) => intent.type === "runtime.stream.open"));
+  })).toBe(true);
 });
 
 test("direct entry opens auto preview when retained account cache only has camera count", async ({ page }) => {

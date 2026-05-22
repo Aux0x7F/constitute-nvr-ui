@@ -1557,7 +1557,17 @@ async function waitForRuntimeAuthorityActionable(timeoutMs = RUNTIME_AUTHORITY_W
   return lastPosture;
 }
 
-function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
+function runtimeShellIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<string, unknown> {
+  const readModel = prepareRuntimeReadModel((snapshot || {}) as Record<string, unknown>, runtimeReadModelOptions(runtimeServiceContext));
+  const shell = readModel.shell && typeof readModel.shell === "object"
+    ? readModel.shell as Record<string, unknown>
+    : {};
+  return shell.identity && typeof shell.identity === "object"
+    ? shell.identity as Record<string, unknown>
+    : {};
+}
+
+function rawSnapshotNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : null;
@@ -1567,7 +1577,15 @@ function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean 
   return identity?.linked === false;
 }
 
+function accountRuntimeNeedsIdentity(snapshot: RuntimeSnapshot | null): boolean {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (preparedIdentity.linked === true) return false;
+  return rawSnapshotNeedsIdentity(snapshot);
+}
+
 function accountRuntimeIdentityResolved(snapshot: RuntimeSnapshot | null): boolean {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (typeof preparedIdentity.linked === "boolean") return true;
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : null;
@@ -1747,7 +1765,8 @@ function localBrowserDevicePk(identity: Record<string, unknown> | null, deviceRe
 
 function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): RuntimeServiceContext | null {
   const identity = localAccountIdentity();
-  const identityId = String(identity?.identityId || identity?.id || "").trim();
+  const snapshotIdentity = runtimeIdentityFromSnapshot(snapshot);
+  const identityId = String(identity?.identityId || identity?.id || snapshotIdentity.identityId || snapshotIdentity.id || "").trim();
   if (!identityId) return null;
   const deviceRecords = localStorageRecordList(ACCOUNT_DEVICE_CACHE_KEY);
   const candidates = [...deviceRecords, ...localHostedServiceRecordsFrom(deviceRecords), ...localGatewayHostedSnapshots()]
@@ -1762,7 +1781,8 @@ function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): Runtime
     record = mergeNvrDirectoryRecords(record, candidate as ManagedApplianceRecord);
   }
   const gatewayPk = applianceGatewayPk(record);
-  const browserDevicePk = localBrowserDevicePk(identity, deviceRecords);
+  const browserDevicePk = localBrowserDevicePk(identity, deviceRecords)
+    || String(snapshotIdentity.devicePk || snapshotIdentity.device_pk || snapshotIdentity.browserDevicePk || "").trim();
   const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk) || localGatewayExtraDiscoveryScope(gatewayPk);
   return {
     contextId: parseRuntimeContextId() || randomOpaqueId("nvr-context"),
@@ -1793,7 +1813,7 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
   let snapshot = await currentRuntimeSnapshot();
   let record = directEntryNvrServiceRecord(snapshot);
   if (record) return { snapshot, record };
-  if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
+  if (localCachedNvrRuntimeContext(snapshot)) return { snapshot, record: null };
 
   const deadline = Date.now() + DIRECT_ENTRY_ACCOUNT_HYDRATION_TIMEOUT_MS;
   let identityResolvedAt = 0;
@@ -1801,7 +1821,7 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
     snapshot = await currentRuntimeSnapshot();
     record = directEntryNvrServiceRecord(snapshot);
     if (record) return { snapshot, record };
-    if (accountRuntimeNeedsIdentity(snapshot)) return { snapshot, record: null };
+    if (localCachedNvrRuntimeContext(snapshot)) return { snapshot, record: null };
     if (accountRuntimeIdentityResolved(snapshot)) {
       identityResolvedAt ||= Date.now();
       if (Date.now() - identityResolvedAt >= DIRECT_ENTRY_ACCOUNT_HYDRATED_SETTLE_MS) {
@@ -1815,6 +1835,8 @@ async function waitForDirectEntryNvrServiceRecord(): Promise<{
 }
 
 function runtimeIdentityFromSnapshot(snapshot: RuntimeSnapshot | null): Record<string, unknown> {
+  const preparedIdentity = runtimeShellIdentityFromSnapshot(snapshot);
+  if (preparedIdentity.linked === true) return preparedIdentity;
   const shell = snapshot?.shell && typeof snapshot.shell === "object"
     ? snapshot.shell as Record<string, unknown>
     : {};
@@ -1934,6 +1956,9 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
   const contextId = parseRuntimeContextId() || randomOpaqueId("nvr-context");
   const browserDevicePk = String(identity.devicePk || identity.device_pk || identity.browserDevicePk || "").trim();
   const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk);
+  const hostFabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
+    ? record.hostFabric as Record<string, unknown>
+    : null;
   return {
     contextId,
     app: "nvr",
@@ -1944,7 +1969,13 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
     servicePk,
     service: "nvr",
     ...(discoveryScope ? { discoveryScope } : {}),
-    ...(record.hostFabric && typeof record.hostFabric === "object" ? { hostFabric: record.hostFabric as Record<string, unknown> } : {}),
+    ...(hostFabric ? { hostFabric } : {
+      legacyPathFallback: {
+        state: "legacyPathFallback",
+        reason: "runtime service catalog is missing host-fabric posture; using transition service directory",
+        sourceRefs: ["runtime.serviceCatalog", "runtime.managedAppliances"],
+      },
+    }),
     display: nvrDisplayFromRecord(record),
     createdAt: Date.now(),
     expiresAt: Date.now() + (10 * 60_000),
@@ -2960,7 +2991,7 @@ function nvrServiceCatalogBlockedReason(record: ManagedApplianceRecord): string 
   const fabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
     ? record.hostFabric as Record<string, unknown>
     : null;
-  if (!fabric) return "Security Cameras service is missing MSA host-fabric posture.";
+  if (!fabric) return "";
   const state = String(fabric.state || fabric.fulfillmentState || fabric.lifecycleState || "").trim().toLowerCase();
   const blockedReasons = Array.isArray(fabric.blockedReasons)
     ? fabric.blockedReasons.map((reason) => String(reason || "").trim()).filter(Boolean)
