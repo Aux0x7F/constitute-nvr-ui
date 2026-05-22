@@ -59,7 +59,7 @@ import {
   runtimeRouteObservationPosture,
   runtimeStreamSessionPosture as summarizeRuntimeStreamSessionPosture,
 } from "constitute-ui/runtime-stream-session";
-import { preparedServiceRegistryServices } from "constitute-ui";
+import { prepareServiceHostFabricPosture, preparedServiceRegistryServices } from "constitute-ui";
 import {
   MEDIA_RENDER_BLOCKED_GRACE_MS,
   MEDIA_RENDER_WAITING_GRACE_MS,
@@ -1957,7 +1957,7 @@ function contextFromRuntimeRecord(record: ManagedApplianceRecord, snapshot: Runt
   const browserDevicePk = String(identity.devicePk || identity.device_pk || identity.browserDevicePk || "").trim();
   const discoveryScope = runtimeDiscoveryScopeFromRecord(record, snapshot, gatewayPk);
   const hostFabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
-    ? record.hostFabric as Record<string, unknown>
+    ? prepareServiceHostFabricPosture(record.hostFabric as Record<string, unknown>)
     : null;
   return {
     contextId,
@@ -2989,10 +2989,10 @@ function nvrServiceCatalogBlockedReason(record: ManagedApplianceRecord): string 
     return String(legacyFallback.reason || "Security Cameras service is projected from a quarantined legacy path.").trim();
   }
   const fabric = record.hostFabric && typeof record.hostFabric === "object" && !Array.isArray(record.hostFabric)
-    ? record.hostFabric as Record<string, unknown>
+    ? prepareServiceHostFabricPosture(record.hostFabric as Record<string, unknown>)
     : null;
   if (!fabric) return "";
-  const state = String(fabric.state || fabric.fulfillmentState || fabric.lifecycleState || "").trim().toLowerCase();
+  const state = String(fabric.state || "").trim().toLowerCase();
   const blockedReasons = Array.isArray(fabric.blockedReasons)
     ? fabric.blockedReasons.map((reason) => String(reason || "").trim()).filter(Boolean)
     : [];
