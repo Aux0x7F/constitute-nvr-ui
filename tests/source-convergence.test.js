@@ -331,6 +331,8 @@ test("first-party account centers use shared runtime read models and account-onl
   assert.match(gatewayRuntimeModel, /deriveRuntimeMaterializationPosture/);
   assert.match(logging, /prepareRuntimeReadModel/);
   assert.match(nvr, /prepareRuntimeReadModel/);
+  assert.match(nvr, /runtimeReadModel\.target/);
+  assert.match(nvr, /runtimeReadModel\.fabric/);
   assert.match(account, /runtimeResourceStatus/);
   assert.match(gatewayRuntimeModel, /Resource posture/);
   assert.match(logging, /runtimeReadModel\.shell/);

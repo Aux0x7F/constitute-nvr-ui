@@ -4186,6 +4186,8 @@ function renderRuntimePostureSummary(): string {
   const shellState = runtimeReadModel.shell as Record<string, any>;
   const resource = shellState.resource || {};
   const retention = shellState.retention || {};
+  const target = runtimeReadModel.target as Record<string, any> || {};
+  const fabric = runtimeReadModel.fabric as Record<string, any> || {};
   return `
     <section class="nestedPanel runtimePosturePanel">
       <div class="summaryLabel">Runtime Posture</div>
@@ -4194,6 +4196,8 @@ function renderRuntimePostureSummary(): string {
         ["Cleanup", resource.cleanupAllowed ? "allowed" : String(resource.cleanupReason || "blocked")],
         ["Retention", String(retention.state || "unknown")],
         ["Release", retention.releaseRequired ? String(retention.reason || "blocked") : "ready"],
+        ["Target", [String(target.state || "pending"), String(target.targetRef || "")].filter(Boolean).join(" / ")],
+        ["Fabric", [String(fabric.state || "pending"), String(fabric.planId || "")].filter(Boolean).join(" / ")],
       ])}
     </section>
   `;
