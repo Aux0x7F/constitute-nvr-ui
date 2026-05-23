@@ -333,6 +333,9 @@ test("first-party account centers use shared runtime read models and account-onl
   assert.match(nvr, /prepareRuntimeReadModel/);
   assert.match(nvr, /runtimeReadModel\.target/);
   assert.match(nvr, /runtimeReadModel\.fabric/);
+  assert.match(nvr, /runtimeCarrierEdgeBlockedDetail/);
+  assert.match(nvr, /scheduleAutomaticReconnect\(carrierEdgeBlocked\);[\s\S]*?return;/);
+  assert.match(nvr, /scheduleAutomaticReconnect\("runtime carrier edge is not actionable yet"\);[\s\S]*?return;/);
   assert.match(account, /runtimeResourceStatus/);
   assert.match(gatewayRuntimeModel, /Resource posture/);
   assert.match(logging, /runtimeReadModel\.shell/);

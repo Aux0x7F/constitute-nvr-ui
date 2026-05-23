@@ -4892,6 +4892,8 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
       scheduleRuntimeAuthorityReconnect(carrierEdgeBlocked);
       return;
     }
+    scheduleAutomaticReconnect(carrierEdgeBlocked);
+    return;
   }
   const carrierPosture = runtimeCarrierEdgePosture(edgePosture);
   const needsEdgeAttach = edgePosture.connected !== true
@@ -4913,6 +4915,12 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
   if (!edgeAttached && edgePosture.mode === "pendingAuthority") {
     markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: "Runtime authority is required before swarm edge attach." });
     scheduleRuntimeAuthorityReconnect("runtime edge attach is waiting for authority");
+    return;
+  }
+  if (!edgeAttached) {
+    setConnectionState("edge blocked", "warn");
+    setDrawerStatus("Runtime carrier edge is not actionable yet.");
+    scheduleAutomaticReconnect("runtime carrier edge is not actionable yet");
     return;
   }
 
