@@ -1739,6 +1739,29 @@ function localGatewayEdgeEndpoint(gatewayPk: string): string {
   return "";
 }
 
+function runtimeCarrierEdgePosture(edge: Record<string, any> = {}): Record<string, any> {
+  const carrier = edge.carrierEdge && typeof edge.carrierEdge === "object"
+    ? edge.carrierEdge
+    : {};
+  const blockedReasons = Array.isArray(carrier.blockedReasons)
+    ? carrier.blockedReasons.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  return {
+    state: String(carrier.state || edge.state || "unknown").trim() || "unknown",
+    connectionState: String(carrier.connectionState || "").trim(),
+    backpressureState: String(carrier.backpressureState || "").trim(),
+    blockedReasons,
+    blocked: carrier.state === "blocked" || carrier.state === "expired" || blockedReasons.length > 0,
+  };
+}
+
+function runtimeCarrierEdgeBlockedDetail(edge: Record<string, any> = {}): string {
+  const carrier = runtimeCarrierEdgePosture(edge);
+  if (!carrier.blocked) return "";
+  const reason = carrier.blockedReasons[0] || carrier.state;
+  return `Runtime carrier edge ${reason}`;
+}
+
 function localAccountIdentity(): Record<string, unknown> | null {
   const identities = localStorageRecordList(ACCOUNT_IDENTITY_CACHE_KEY);
   return identities.find((entry) => String(entry.identityId || entry.id || "").trim()) || null;
@@ -4859,7 +4882,22 @@ async function connectLiveGrid(context: RuntimeServiceContext): Promise<void> {
   }
 
   const edgePosture = runtimeReadModel.edge || {};
-  const needsEdgeAttach = edgePosture.connected !== true || edgePosture.mode === "pendingAuthority";
+  const carrierEdgeBlocked = runtimeCarrierEdgeBlockedDetail(edgePosture);
+  if (carrierEdgeBlocked) {
+    appendLog(`runtime swarm edge blocked: ${carrierEdgeBlocked}`);
+    setConnectionState("edge blocked", "warn");
+    setDrawerStatus(carrierEdgeBlocked);
+    if (String(edgePosture.mode || "") === "pendingAuthority") {
+      markRuntimeAuthorityWaiting({ state: "waitingAuthority", ready: false, reason: carrierEdgeBlocked });
+      scheduleRuntimeAuthorityReconnect(carrierEdgeBlocked);
+      return;
+    }
+  }
+  const carrierPosture = runtimeCarrierEdgePosture(edgePosture);
+  const needsEdgeAttach = edgePosture.connected !== true
+    || edgePosture.mode === "pendingAuthority"
+    || carrierPosture.state === "closed"
+    || carrierPosture.state === "reconnecting";
   const edgeAttached = needsEdgeAttach
     ? await ensureRuntimeSwarmEdgeForContext(context, { force: true }).catch((error) => {
       const detail = String((error as Error)?.message || error);
