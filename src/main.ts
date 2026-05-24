@@ -1748,17 +1748,20 @@ function runtimeCarrierEdgePosture(edge: Record<string, any> = {}): Record<strin
     : [];
   return {
     state: String(carrier.state || edge.state || "unknown").trim() || "unknown",
+    actionabilityState: String(edge.actionabilityState || carrier.actionabilityState || "").trim(),
     connectionState: String(carrier.connectionState || "").trim(),
     backpressureState: String(carrier.backpressureState || "").trim(),
     blockedReasons,
-    blocked: carrier.state === "blocked" || carrier.state === "expired" || blockedReasons.length > 0,
+    blocked: edge.blocked === true || carrier.blocked === true || carrier.state === "blocked" || carrier.state === "expired" || blockedReasons.length > 0,
+    degraded: edge.degraded === true || carrier.degraded === true,
+    waiting: edge.waiting === true || carrier.waiting === true,
   };
 }
 
 function runtimeCarrierEdgeBlockedDetail(edge: Record<string, any> = {}): string {
   const carrier = runtimeCarrierEdgePosture(edge);
   if (!carrier.blocked) return "";
-  const reason = carrier.blockedReasons[0] || carrier.state;
+  const reason = String(edge.reason || carrier.blockedReasons[0] || carrier.actionabilityState || carrier.state).trim();
   return `Runtime carrier edge ${reason}`;
 }
 
@@ -5108,6 +5111,7 @@ function activeRuntimeStreamSessions(): RuntimeStreamSession[] {
 function runtimeStreamSessionPosture(): {
   sessionCount: number;
   waitingRouteCount: number;
+  waitingServiceAdmissionCount: number;
   waitingServiceAcceptanceCount: number;
   serviceAdmissionTimedOutCount: number;
   waitingAnswerCount: number;
@@ -5174,15 +5178,15 @@ function scheduleStreamLiveWatchdog(reason: string): void {
       void reportServiceStatus("unavailable", "Stream route delivered, but the service did not admit the request.", "stream_projection");
       return;
     }
-    if (activationStillOpen && posture.waitingServiceAcceptanceCount > 0) {
-      appendLog(`stream live watchdog holding ${posture.waitingServiceAcceptanceCount} active session(s) awaiting service acceptance`);
+    if (activationStillOpen && posture.waitingServiceAdmissionCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.waitingServiceAdmissionCount} active session(s) awaiting service admission`);
       setConnectionState("connecting", "warn");
-      setDrawerStatus("Stream route delivered; waiting for service acceptance.");
+      setDrawerStatus("Stream route delivered; waiting for service admission.");
       for (const sourceId of cameraTiles.keys()) {
-        setTileState(sourceId, "connecting", "Waiting for stream service acceptance.");
+        setTileState(sourceId, "connecting", "Waiting for stream service admission.");
       }
-      void reportServiceStatus("connecting", "Stream route delivered; waiting for service acceptance.", "stream_projection");
-      scheduleStreamLiveWatchdog("stream service acceptance still pending");
+      void reportServiceStatus("connecting", "Stream route delivered; waiting for service admission.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream service admission still pending");
       return;
     }
     if (activationStillOpen && posture.waitingAnswerCount > 0) {
