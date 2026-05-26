@@ -22,6 +22,7 @@ import {
   RUNTIME_MEDIA_FULFILLMENT_EVIDENCE_PUT,
   RUNTIME_MEDIA_TRANSPORT_OBSERVATION_PUT,
   RUNTIME_MEDIA_TRANSPORT_PROFILE_GET,
+  RUNTIME_STREAM_PREPARE,
   RUNTIME_STREAM_CLOSE,
   RUNTIME_STREAM_CONTROL,
   RUNTIME_STREAM_OPEN,
@@ -46,10 +47,12 @@ import {
   applyRuntimeActivationPostureToStreamSession,
   applyRuntimeStreamLifecycleToStreamSession,
   applyRuntimeMediaFulfillmentPostureToStreamSession,
+  applyRuntimeMediaTransportReadModelToStreamSession,
   applyRuntimeRouteObservationToStreamSession,
   collectRuntimeActivationKeys,
   collectRuntimeIntentResultKeys,
   collectRuntimeMediaFulfillmentKeys,
+  collectRuntimeMediaTransportObservationKeys,
   collectRuntimeObservationKeys,
   collectRuntimeStreamFrameKeys,
   runtimeIntentFrameId,
@@ -379,6 +382,7 @@ type RuntimeSnapshot = {
   projectionPolicies?: Record<string, unknown>;
   activationResolutions?: Record<string, Record<string, unknown>>;
   mediaFulfillment?: Record<string, Record<string, unknown>>;
+  mediaTransportObservations?: Record<string, Record<string, unknown>> | Record<string, unknown>[];
   streamRecovery?: Record<string, Record<string, unknown>>;
   managedAppliances?: {
     owned?: Array<Record<string, unknown>>;
@@ -435,14 +439,34 @@ type RuntimeIntentResult = {
   error?: string;
 };
 
+type RuntimeStreamPreparation = {
+  state?: string;
+  nonce: string;
+  sessionId: string;
+  fulfillmentSessionId: string;
+  operationRef: string;
+  operationClassRef: string;
+  methodRef: string;
+  operationInstancePosture?: Record<string, unknown>;
+  intentId: string;
+  issuedAt: number;
+  expiresAt: number;
+  [key: string]: unknown;
+};
+
 type RuntimeStreamSession = BrowserStreamSession & {
   serviceAdmissionTimedOut?: boolean;
   runtimeBlockedReason?: string;
   mediaPathState?: string;
+  mediaPostureState?: string;
+  mediaPathId?: string;
   mediaBlockedReason?: string;
   mediaVisibleFrame?: boolean;
   mediaTrackLive?: boolean;
   mediaTransportUsable?: boolean;
+  mediaRenderReadinessState?: string;
+  serviceMediaObserved?: boolean;
+  browserMediaObserved?: boolean;
 };
 
 type NvrProjectionState = {
@@ -598,6 +622,7 @@ const poseStatusBySourceId = new Map<string, string>();
 const runtimeStreamSessionsByFrameId = new Map<string, RuntimeStreamSession>();
 const runtimeStreamSessionsBySessionId = new Map<string, RuntimeStreamSession>();
 const runtimeStreamSessionsByCorrelationKey = new Map<string, RuntimeStreamSession>();
+const runtimeMediaTransportObservationsByPostureKey = new Map<string, Record<string, unknown>[]>();
 const knownCandidateIds = new Set<string>();
 const unboundRuntimeStreamFrameKeys = new Set<string>();
 let nvrProjectionState: NvrProjectionState = {
@@ -783,6 +808,7 @@ function absorbRuntimeSnapshot(snapshot: unknown): void {
   }
   applyRuntimeActivationPostureFromSnapshot();
   applyRuntimeMediaFulfillmentPostureFromSnapshot();
+  applyRuntimeMediaTransportReadModelFromSnapshot();
   applyNvrRuntimeProjections();
   if (!runtimeServiceContext && directEntryNvrServiceRecord(runtimeBaseline)) {
     scheduleDirectEntryRuntimeRepair("runtime snapshot advertised Security Cameras");
@@ -1238,7 +1264,7 @@ function handleRuntimeRouteObservation(observation: Record<string, unknown> | un
     setConnectionState("connecting", "warn");
     const routeStatus = posture.routeState === "routeAccepted"
       ? "Stream route carrier acknowledged."
-      : "Stream route delivered.";
+      : "Stream route observed.";
     setDrawerStatus(routeStatus);
     return;
   }
@@ -1272,6 +1298,54 @@ function streamSessionForRuntimeKeys(keys: Set<string>): RuntimeStreamSession | 
     if (runtimeStreamSessionsByCorrelationKey.has(key)) return runtimeStreamSessionsByCorrelationKey.get(key) || null;
   }
   return null;
+}
+
+function mediaTransportObservationPostureKey(observation: Record<string, unknown>, session: RuntimeStreamSession | null = null): string {
+  return String(
+    observation.fulfillmentSessionId
+    || observation.fulfillment_session_id
+    || session?.fulfillmentSessionId
+    || observation.sessionId
+    || observation.session_id
+    || session?.sessionId
+    || observation.pathId
+    || observation.path_id
+    || observation.observationId
+    || "",
+  ).trim();
+}
+
+function rememberRuntimeMediaTransportObservation(observation: Record<string, unknown>, session: RuntimeStreamSession | null): Record<string, unknown>[] {
+  const key = mediaTransportObservationPostureKey(observation, session);
+  if (!key) return [observation];
+  const records = runtimeMediaTransportObservationsByPostureKey.get(key) || [];
+  records.push(observation);
+  while (records.length > NVR_STREAM_EVENT_LIMIT) records.shift();
+  runtimeMediaTransportObservationsByPostureKey.set(key, records);
+  return records;
+}
+
+function applyRuntimeMediaTransportObservation(observation: Record<string, unknown>): RuntimeStreamSession | null {
+  const keys = collectRuntimeMediaTransportObservationKeys(observation);
+  const session = streamSessionForRuntimeKeys(keys);
+  const records = rememberRuntimeMediaTransportObservation(observation, session);
+  if (!session) return null;
+  registerRuntimeStreamSessionKeys(session, keys);
+  applyRuntimeMediaTransportReadModelToStreamSession(session, records, {
+    fulfillmentSessionId: session.fulfillmentSessionId,
+    sessionId: session.sessionId,
+  });
+  return session;
+}
+
+function applyRuntimeMediaTransportReadModelFromSnapshot(): void {
+  const observations = runtimeBaseline?.mediaTransportObservations;
+  if (!observations) return;
+  const records = Array.isArray(observations) ? observations : Object.values(observations);
+  for (const observation of records) {
+    if (!observation || typeof observation !== "object") continue;
+    applyRuntimeMediaTransportObservation(observation as Record<string, unknown>);
+  }
 }
 
 function applyRuntimeActivationPostureFromSnapshot(): void {
@@ -1537,6 +1611,48 @@ async function runtimeMediaTransportProfile(): Promise<RuntimeMediaTransportProf
   }
 }
 
+function assertRuntimeStreamPreparation(value: RuntimeStreamPreparation): RuntimeStreamPreparation {
+  const missing = [
+    "nonce",
+    "sessionId",
+    "fulfillmentSessionId",
+    "operationRef",
+    "operationClassRef",
+    "methodRef",
+    "intentId",
+  ].filter((key) => !String(value?.[key] || "").trim());
+  if (missing.length) {
+    throw new Error(`runtime stream preparation missing ${missing.join(", ")}`);
+  }
+  return value;
+}
+
+async function prepareRuntimeStreamOpenIntent({
+  sourceId,
+  sourceIds,
+  timeoutMs,
+}: {
+  sourceId: string;
+  sourceIds: string[];
+  timeoutMs: number;
+}): Promise<RuntimeStreamPreparation> {
+  const issuedAt = Date.now();
+  const prepared = await runtimeCall<RuntimeStreamPreparation>(RUNTIME_STREAM_PREPARE, {
+    payload: {
+      sourceId,
+      sourceIds,
+      nodeRef: "nvr.streams",
+      capabilityRef: SWARM.CORE_CAPABILITY.MEDIA_STREAM_PREVIEW,
+      transport: "webrtc",
+      materializationBudgetRef: String(nvrSurfaceBudgets.preview.budgetId || "nvr-ui.preview"),
+      evidenceBudgetRef: String(nvrSurfaceBudgets.streamEvents.budgetId || "nvr-ui.stream-events"),
+      issuedAt,
+      expiresAt: issuedAt + (2 * 60_000),
+    },
+  }, timeoutMs);
+  return assertRuntimeStreamPreparation(prepared);
+}
+
 async function waitForRuntimeAuthorityActionable(timeoutMs = RUNTIME_AUTHORITY_WAIT_TIMEOUT_MS): Promise<RuntimeAuthorityPosture | null> {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   let lastPosture: RuntimeAuthorityPosture | null = null;
@@ -1770,6 +1886,19 @@ function localAccountIdentity(): Record<string, unknown> | null {
   return identities.find((entry) => String(entry.identityId || entry.id || "").trim()) || null;
 }
 
+function localRetainedIdentityIdFromRecords(records: Record<string, unknown>[]): string {
+  for (const record of records) {
+    const identityId = String(record.identityId || record.identity_id || record.ownerIdentityId || record.owner_identity_id || "").trim();
+    if (identityId) return identityId;
+    const facts = record.facts && typeof record.facts === "object" && !Array.isArray(record.facts)
+      ? record.facts as Record<string, unknown>
+      : null;
+    const factsIdentityId = String(facts?.identityId || facts?.identity_id || "").trim();
+    if (factsIdentityId) return factsIdentityId;
+  }
+  return "";
+}
+
 function localBrowserDevicePk(identity: Record<string, unknown> | null, deviceRecords: Record<string, unknown>[]): string {
   const browserRecord = deviceRecords.find((entry) => {
     const role = normalizeRole(entry.role || entry.deviceKind || "");
@@ -1792,10 +1921,18 @@ function localBrowserDevicePk(identity: Record<string, unknown> | null, deviceRe
 function localCachedNvrRuntimeContext(snapshot: RuntimeSnapshot | null): RuntimeServiceContext | null {
   const identity = localAccountIdentity();
   const snapshotIdentity = runtimeIdentityFromSnapshot(snapshot);
-  const identityId = String(identity?.identityId || identity?.id || snapshotIdentity.identityId || snapshotIdentity.id || "").trim();
-  if (!identityId) return null;
   const deviceRecords = localStorageRecordList(ACCOUNT_DEVICE_CACHE_KEY);
-  const candidates = [...deviceRecords, ...localHostedServiceRecordsFrom(deviceRecords), ...localGatewayHostedSnapshots()]
+  const retainedRecords = [...deviceRecords, ...localHostedServiceRecordsFrom(deviceRecords), ...localGatewayHostedSnapshots()];
+  const identityId = String(
+    identity?.identityId
+      || identity?.id
+      || snapshotIdentity.identityId
+      || snapshotIdentity.id
+      || localRetainedIdentityIdFromRecords(retainedRecords)
+      || "",
+  ).trim();
+  if (!identityId) return null;
+  const candidates = retainedRecords
     .filter((record) => isNvrApplianceRecord(record) && applianceDevicePk(record) && applianceGatewayPk(record))
     .sort((left, right) => {
       const sourceDelta = nvrRecordPreparedSourceCount(right) - nvrRecordPreparedSourceCount(left);
@@ -2185,6 +2322,8 @@ function registerRuntimeStreamSessionKeys(session: RuntimeStreamSession, keys: I
 function registerRuntimeStreamSession(session: RuntimeStreamSession): void {
   runtimeStreamSessionsBySessionId.set(session.sessionId, session);
   registerRuntimeStreamSessionKey(session, session.sessionId);
+  registerRuntimeStreamSessionKey(session, session.fulfillmentSessionId);
+  registerRuntimeStreamSessionKey(session, session.mediaPathId);
   if (session.frameId) {
     runtimeStreamSessionsByFrameId.set(session.frameId, session);
     registerRuntimeStreamSessionKey(session, session.frameId);
@@ -2202,6 +2341,7 @@ function unregisterRuntimeStreamSession(session: RuntimeStreamSession): void {
 }
 
 function reportMediaTransportObservation(observation: MediaTransportObservation): void {
+  applyRuntimeMediaTransportObservation(observation as unknown as Record<string, unknown>);
   void runtimeCall(RUNTIME_MEDIA_TRANSPORT_OBSERVATION_PUT, { payload: observation }, RUNTIME_WRITE_TIMEOUT_MS).catch((error) => {
     appendLog(`media transport observation report failed: ${String((error as Error)?.message || error)}`);
   });
@@ -2366,11 +2506,13 @@ function handleRuntimeStreamAdapterState(session: RuntimeStreamSession, state: B
 async function publishRuntimeStreamCandidate({
   nonce,
   sessionId,
+  fulfillmentSessionId,
   sourceId,
   candidate,
 }: {
   nonce: string;
   sessionId: string;
+  fulfillmentSessionId: string;
   sourceId: string;
   candidate: RTCIceCandidateInit;
 }): Promise<void> {
@@ -2380,6 +2522,7 @@ async function publishRuntimeStreamCandidate({
     intent: {
       nonce,
       sessionId,
+      fulfillmentSessionId,
       candidateId: `candidate-${sessionId}-${issuedAt}-${randomOpaqueId("ice")}`,
       transport: "webrtc",
       sourceId,
@@ -2405,11 +2548,25 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
     const requestedSourceIds = autoPreview ? [] : [sourceId];
     const sentInitialCandidateKeys = new Set<string>();
     let streamOpenQueued = false;
-    const nonce = randomOpaqueId("stream");
-    const expectedSessionId = `nvr-preview-${nonce}`;
+    const streamPlan = await prepareRuntimeStreamOpenIntent({
+      sourceId,
+      sourceIds: requestedSourceIds,
+      timeoutMs,
+    });
+    const nonce = streamPlan.nonce;
+    const expectedSessionId = streamPlan.sessionId;
+    const runtimeFulfillmentSessionId = streamPlan.fulfillmentSessionId;
+    const runtimeOperationRef = streamPlan.operationRef;
+    const runtimeOperationClassRef = streamPlan.operationClassRef;
+    const runtimeOperationMethodRef = streamPlan.methodRef;
+    const intentId = streamPlan.intentId;
     const offer = await createBrowserStreamOffer({
       sourceId,
       sessionId: expectedSessionId,
+      fulfillmentSessionId: runtimeFulfillmentSessionId,
+      operationRef: runtimeOperationRef,
+      operationClassRef: runtimeOperationClassRef,
+      methodRef: runtimeOperationMethodRef,
       nonce,
       moduleRef: nvrSurfaceModules.platformAdapter.moduleRef,
       adapterBindingPosture: nvrPlatformAdapterBindingPosture,
@@ -2420,6 +2577,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
         void publishRuntimeStreamCandidate({
           nonce,
           sessionId: expectedSessionId,
+          fulfillmentSessionId: runtimeFulfillmentSessionId,
           sourceId,
           candidate,
         }).catch((error) => {
@@ -2431,20 +2589,26 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
     });
     const session = offer.session;
     const offerCandidates = offer.candidates.slice();
-    const issuedAt = Date.now();
-    const expiresAt = issuedAt + (2 * 60_000);
-    const intentId = randomOpaqueId("stream-intent");
+    const issuedAt = Number(streamPlan.issuedAt || 0) || Date.now();
+    const expiresAt = Number(streamPlan.expiresAt || 0) || issuedAt + (2 * 60_000);
     session.issuedAt = issuedAt;
     session.expiresAt = expiresAt;
     registerRuntimeStreamSessionKeys(session, [
       expectedSessionId,
+      runtimeFulfillmentSessionId,
       nonce,
+      runtimeOperationRef,
       intentId,
       `route:${intentId}`,
     ]);
     registerRuntimeStreamSession(session);
     const record = {
       sessionId: expectedSessionId,
+      fulfillmentSessionId: runtimeFulfillmentSessionId,
+      operationRef: runtimeOperationRef,
+      operationClassRef: runtimeOperationClassRef,
+      methodRef: runtimeOperationMethodRef,
+      operationInstancePosture: streamPlan.operationInstancePosture,
       nonce,
       intentId,
       nodeRef: "nvr.streams",
@@ -2498,6 +2662,7 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
       void publishRuntimeStreamCandidate({
         nonce,
         sessionId: expectedSessionId,
+        fulfillmentSessionId: runtimeFulfillmentSessionId,
         sourceId,
         candidate,
       }).catch((error) => {
@@ -2514,20 +2679,33 @@ async function publishRuntimeStreamIntent(sourceIds: string[], timeoutMs = RUNTI
 }
 
 async function publishRuntimeStreamControl(command: string, params: Record<string, unknown> = {}): Promise<RuntimeIntentResult> {
+  const sourceIds = normalizeSourceIds(params.sourceIds || (params.sourceId ? [params.sourceId] : []));
+  const requestedSessionId = String(params.sessionId || "").trim();
+  const session = requestedSessionId
+    ? runtimeStreamSessionsBySessionId.get(requestedSessionId) || null
+    : activeRuntimeStreamSessions().find((entry) => sourceIds.includes(entry.sourceId)) || null;
+  const sessionId = String(params.sessionId || session?.sessionId || "nvr-preview").trim();
+  const fulfillmentSessionId = String(params.fulfillmentSessionId || session?.fulfillmentSessionId || "").trim();
+  const mediaPathId = String(params.mediaPathId || session?.mediaPathId || "").trim();
+  if (!fulfillmentSessionId) {
+    throw new Error("runtime stream control requires fulfillmentSessionId");
+  }
   const record = {
     controlId: randomOpaqueId("stream-control"),
-    sessionId: String(params.sessionId || "nvr-preview").trim(),
+    sessionId,
+    fulfillmentSessionId,
+    mediaPathId,
     command,
     params: {
       ...params,
-      sourceIds: normalizeSourceIds(params.sourceIds || []),
+      sourceIds,
     },
     issuedAt: Date.now(),
   };
   return await queueRuntimeAppIntent({
     method: command === "close" ? RUNTIME_STREAM_CLOSE : RUNTIME_STREAM_CONTROL,
     intent: {
-      nodeRef: normalizeSourceIds(params.sourceIds || (params.sourceId ? [params.sourceId] : []))[0] || undefined,
+      nodeRef: sourceIds[0] || undefined,
       capabilityRef: SWARM.CORE_CAPABILITY.MEDIA_STREAM_PREVIEW,
       ...record,
     },
@@ -5117,6 +5295,11 @@ function runtimeStreamSessionPosture(): {
   waitingAnswerCount: number;
   rejectedCount: number;
   answerReceivedCount: number;
+  mediaBlockedCount: number;
+  mediaUsableCount: number;
+  mediaReleasedCount: number;
+  mediaWaitingRenderCount: number;
+  mediaTransportDegradedCount: number;
   expiresAt: number;
 } {
   return summarizeRuntimeStreamSessionPosture(activeRuntimeStreamSessions());
@@ -5171,21 +5354,21 @@ function scheduleStreamLiveWatchdog(reason: string): void {
     if (activationStillOpen && posture.serviceAdmissionTimedOutCount > 0) {
       appendLog(`stream live watchdog holding ${posture.serviceAdmissionTimedOutCount} timed-out service admission session(s)`);
       setConnectionState("unavailable", "bad");
-      setDrawerStatus("Stream route delivered, but the service did not admit the request.");
+      setDrawerStatus("Stream route observed, but the service did not admit the request.");
       for (const sourceId of cameraTiles.keys()) {
         setTileState(sourceId, "unavailable", "Stream service did not admit the request.");
       }
-      void reportServiceStatus("unavailable", "Stream route delivered, but the service did not admit the request.", "stream_projection");
+      void reportServiceStatus("unavailable", "Stream route observed, but the service did not admit the request.", "stream_projection");
       return;
     }
     if (activationStillOpen && posture.waitingServiceAdmissionCount > 0) {
       appendLog(`stream live watchdog holding ${posture.waitingServiceAdmissionCount} active session(s) awaiting service admission`);
       setConnectionState("connecting", "warn");
-      setDrawerStatus("Stream route delivered; waiting for service admission.");
+      setDrawerStatus("Stream route observed; waiting for service admission.");
       for (const sourceId of cameraTiles.keys()) {
         setTileState(sourceId, "connecting", "Waiting for stream service admission.");
       }
-      void reportServiceStatus("connecting", "Stream route delivered; waiting for service admission.", "stream_projection");
+      void reportServiceStatus("connecting", "Stream route observed; waiting for service admission.", "stream_projection");
       scheduleStreamLiveWatchdog("stream service admission still pending");
       return;
     }
@@ -5207,6 +5390,39 @@ function scheduleStreamLiveWatchdog(reason: string): void {
       void reportServiceStatus("unavailable", "Stream service rejected.", "stream_projection");
       return;
     }
+    if (activationStillOpen && posture.mediaBlockedCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.mediaBlockedCount} blocked media transport session(s)`);
+      setConnectionState("reconnecting", "warn");
+      setDrawerStatus("Stream media path is blocked; reconnecting.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Stream media path blocked; reconnecting.");
+      }
+      void reportServiceStatus("reconnecting", "Stream media path is blocked; reconnecting.", "stream_projection");
+      scheduleAutomaticReconnect("stream media path blocked");
+      return;
+    }
+    if (activationStillOpen && posture.mediaWaitingRenderCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.mediaWaitingRenderCount} media transport session(s) awaiting render`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Stream transport is usable; waiting for browser render.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Waiting for browser render.");
+      }
+      void reportServiceStatus("connecting", "Stream transport is usable; waiting for browser render.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream media transport waiting for render");
+      return;
+    }
+    if (activationStillOpen && posture.mediaTransportDegradedCount > 0) {
+      appendLog(`stream live watchdog holding ${posture.mediaTransportDegradedCount} degraded media transport session(s)`);
+      setConnectionState("connecting", "warn");
+      setDrawerStatus("Stream transport is selected; waiting for media flow.");
+      for (const sourceId of cameraTiles.keys()) {
+        setTileState(sourceId, "connecting", "Waiting for media flow.");
+      }
+      void reportServiceStatus("connecting", "Stream transport is selected; waiting for media flow.", "stream_projection");
+      scheduleStreamLiveWatchdog("stream media transport waiting for flow");
+      return;
+    }
     if (activationStillOpen && posture.answerReceivedCount > 0) {
       appendLog(`stream live watchdog holding ${posture.answerReceivedCount} answered session(s) awaiting media track`);
       setConnectionState("connecting", "warn");
@@ -5220,11 +5436,11 @@ function scheduleStreamLiveWatchdog(reason: string): void {
     }
     appendLog(`stream live watchdog fired: ${reason}`);
     setConnectionState("reconnecting", "warn");
-    setDrawerStatus("Stream route delivered; retrying live adapter.");
+    setDrawerStatus("Stream route observed; retrying live adapter.");
     for (const sourceId of cameraTiles.keys()) {
       setTileState(sourceId, "connecting", "Retrying live preview adapter...");
     }
-    void reportServiceStatus("reconnecting", "Stream route delivered but no live media track attached; retrying.", "stream_adapter");
+    void reportServiceStatus("reconnecting", "Stream route observed but no live media track attached; retrying.", "stream_adapter");
     scheduleAutomaticReconnect("stream adapter did not become live");
   }, RUNTIME_STREAM_LIVE_WATCHDOG_MS);
 }

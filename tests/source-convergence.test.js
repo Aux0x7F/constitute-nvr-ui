@@ -46,6 +46,8 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(streamSession, /export function runtimeRouteObservationPosture/);
   assert.match(streamSession, /export function applyRuntimeRouteObservationToStreamSession/);
   assert.match(streamSession, /export function applyRuntimeActivationPostureToStreamSession/);
+  assert.match(streamSession, /export function collectRuntimeMediaTransportObservationKeys/);
+  assert.match(streamSession, /export function applyRuntimeMediaTransportReadModelToStreamSession/);
   assert.match(streamSession, /export function runtimeStreamSessionPosture/);
   assert.doesNotMatch(main, /new RTCPeerConnection/);
   assert.doesNotMatch(main, /pc\.createOffer/);
@@ -64,6 +66,9 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(adapter, /mediaFulfillmentEvidenceFromRender/);
   assert.match(adapter, /collectBrowserMediaFulfillmentEvidence/);
   assert.match(adapter, /bindBrowserMediaStream/);
+  assert.match(adapter, /operationRef\?: string/);
+  assert.match(adapter, /operationRef: session\.operationRef/);
+  assert.match(adapter, /\[options\.sessionId, options\.fulfillmentSessionId, options\.operationRef, options\.nonce\]/);
   assert.match(nvrAdapter, /bindBrowserMediaStream/);
   assert.match(main, /bindBrowserMediaStream\(tile\.video, mediaStream\)/);
   assert.match(main, /reconnect\(\{ force: true \}\)/);
@@ -96,6 +101,16 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.doesNotMatch(main, /tile\.video\.srcObject = stream/);
   assert.match(main, /applyRuntimeRouteObservationToStreamSession/);
   assert.match(main, /applyRuntimeStreamLifecycleToStreamSession/);
+  assert.match(main, /applyRuntimeMediaTransportReadModelToStreamSession/);
+  assert.match(main, /RUNTIME_STREAM_PREPARE/);
+  assert.match(main, /prepareRuntimeStreamOpenIntent/);
+  assert.match(main, /runtimeFulfillmentSessionId = streamPlan\.fulfillmentSessionId/);
+  assert.match(main, /runtimeOperationRef = streamPlan\.operationRef/);
+  assert.match(main, /"operationRef"/);
+  assert.match(main, /operationRef: runtimeOperationRef/);
+  assert.match(main, /operationInstancePosture: streamPlan\.operationInstancePosture/);
+  assert.doesNotMatch(main, /operation:preview:runtime-stream-open:/);
+  assert.doesNotMatch(main, /fulfillment:preview:\$\{expectedSessionId\}/);
   assert.match(streamSession, /memberWritten/);
   assert.match(streamSession, /memberRead/);
   assert.match(streamSession, /routeAccepted/);
@@ -104,7 +119,7 @@ test("nvr ui activates runtime stream intents without owning browser transport s
   assert.match(main, /applyRuntimeActivationPostureFromSnapshot/);
   assert.match(main, /activationResolutions/);
   assert.match(main, /serviceAdmissionTimedOut/);
-  assert.match(main, /Stream route delivered, but the service did not admit the request/);
+  assert.match(main, /Stream route observed, but the service did not admit the request/);
   assert.match(main, /RUNTIME_MEDIA_FULFILLMENT_EVIDENCE_PUT/);
   assert.match(main, /reportMediaFulfillmentEvidence/);
   assert.match(main, /"stream_adapter"/);
@@ -359,6 +374,8 @@ test("nvr ui keeps live media state distinct from route delivery and inventory g
   assert.match(nvr, /function hasAllExpectedLiveTiles\(/);
   assert.match(nvr, /function missingLiveSourceIds\(/);
   assert.match(nvr, /function scheduleMissingSourceReconnect\(/);
+  assert.match(nvr, /Stream transport is usable; waiting for browser render\./);
+  assert.match(nvr, /Stream transport is selected; waiting for media flow\./);
   assert.match(nvr, /if \(hasAllExpectedLiveTiles\(\)\) \{\s+setConnectionState\("live", "good"\);/s);
   assert.match(nvr, /const markRenderLive = \(evidence = reportRenderReadiness\(session, tile\.video\)\) => \{[\s\S]*?setTileState\(sourceId, "live"/);
   assert.match(nvr, /waiting for remaining live preview streams/);
