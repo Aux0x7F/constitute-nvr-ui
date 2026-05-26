@@ -22,6 +22,7 @@ type RuntimeHarnessOptions = {
   localAccountCacheFallback?: boolean;
   localAccountCacheDelayMs?: number;
   localAccountCacheIdentity?: boolean;
+  localAccountCacheRecordIdentity?: boolean;
   localAccountCacheSources?: boolean;
   pendingStreamRoute?: boolean;
   edgeAttachAuthorityWait?: boolean;
@@ -211,10 +212,11 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
   const delayedSnapshot = options.delayedServiceAfterSnapshotGets
     ? runtimeSnapshot({ ...options, includeNvrService: true })
     : null;
-  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheDelayMs, localAccountCacheIdentity, localAccountCacheSources, pendingStreamRoute, edgeAttachAuthorityWait, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
+  await page.addInitScript(({ snapshot, delayedSnapshot, delayedServiceAfterSnapshotGets, authorityPostures, earlyStreamAnswer, localAccountCacheFallback, localAccountCacheDelayMs, localAccountCacheIdentity, localAccountCacheRecordIdentity, localAccountCacheSources, pendingStreamRoute, edgeAttachAuthorityWait, adapterIceFailureAfterAnswer, mediaTransportProfileUnsupported, browserPk, gatewayPk, nvrServicePk }) => {
     const seedLocalAccountCache = () => {
       const ts = Date.now();
       const includeSources = localAccountCacheSources !== false;
+      const recordIdentity = localAccountCacheRecordIdentity === true ? "identity-001" : "";
       if (localAccountCacheIdentity !== false) {
         window.localStorage.setItem("swarm.identityCache", JSON.stringify({
           ts,
@@ -244,6 +246,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
             role: "gateway",
             deviceKind: "service",
             deviceLabel: "Lab Gateway",
+            ...(recordIdentity ? { identityId: recordIdentity } : {}),
             relays: ["ws://gateway.local:7447"],
             updatedAt: ts,
             expiresAt: ts + 86_400_000,
@@ -256,6 +259,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
             deviceKind: "service",
             deviceLabel: "Security Cameras",
             hostGatewayPk: gatewayPk,
+            ...(recordIdentity ? { identityId: recordIdentity } : {}),
             cameraCount: 2,
             ...(includeSources ? {
               sources: ["cam-front", "cam-back"],
@@ -289,6 +293,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
       snapshotGets: 0,
       frames: [] as Array<Record<string, unknown>>,
       intents: [] as Array<Record<string, unknown>>,
+      preparations: [] as Array<Record<string, unknown>>,
       policies: [] as Array<Record<string, unknown>>,
       statuses: [] as Array<Record<string, unknown>>,
       mediaProfileRequests: 0,
@@ -421,6 +426,36 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
           });
           return;
         }
+        if (type === "runtime.stream.prepare") {
+          const payload = message.payload as Record<string, unknown>;
+          const index = state.preparations.length + 1;
+          const sourceId = String(payload?.sourceId || `source-${index}`).trim();
+          const prepared = {
+            state: "prepared",
+            nonce: `nonce-${index}`,
+            sessionId: `session-${index}-${sourceId}`,
+            fulfillmentSessionId: `fulfillment-session-${index}-${sourceId}`,
+            operationRef: `operation:preview:runtime-stream-open:session-${index}-${sourceId}`,
+            operationClassRef: "operation-class:stream-open",
+            methodRef: "runtime.stream.open",
+            operationInstancePosture: {
+              kind: "operation.instance.posture",
+              state: "selected",
+              safeFacts: {
+                runtimeAllocatesSelectedOperationRefs: true,
+                surfaceBindsElementsAndObserves: true,
+              },
+            },
+            intentId: `intent-${index}-${sourceId}`,
+            sourceId,
+            sourceIds: Array.isArray(payload?.sourceIds) ? payload.sourceIds : [],
+            issuedAt: Date.now(),
+            expiresAt: Date.now() + 60_000,
+          };
+          state.preparations.push({ type, payload, prepared });
+          this.respond(message, prepared);
+          return;
+        }
         if (type === "service.node.policy.put") {
           state.policies.push(message.policy as Record<string, unknown>);
           this.respond(message, { ok: true });
@@ -539,6 +574,7 @@ async function installRuntimeHarness(page: Page, options: RuntimeHarnessOptions 
     localAccountCacheFallback: options.localAccountCacheFallback === true,
     localAccountCacheDelayMs: options.localAccountCacheDelayMs || 0,
     localAccountCacheIdentity: options.localAccountCacheIdentity !== false,
+    localAccountCacheRecordIdentity: options.localAccountCacheRecordIdentity === true,
     localAccountCacheSources: options.localAccountCacheSources !== false,
     authorityPostures: options.authorityPostures || [],
     pendingStreamRoute: options.pendingStreamRoute === true,
@@ -580,14 +616,19 @@ test("direct entry renders retained stream projections and queues runtime stream
       nodeRef: "nvr.streams",
       capabilityRef: "media.stream.preview",
       sourceIds: ["cam-front"],
+      operationClassRef: "operation-class:stream-open",
+      methodRef: "runtime.stream.open",
     }),
     expect.objectContaining({
       nodeRef: "nvr.streams",
       capabilityRef: "media.stream.preview",
       sourceIds: ["cam-back"],
+      operationClassRef: "operation-class:stream-open",
+      methodRef: "runtime.stream.open",
     }),
   ]));
   for (const activation of activations) {
+    expect(String(activation.operationRef || "")).toMatch(/^operation:preview:runtime-stream-open:/);
     expect(activation).not.toHaveProperty("channelId");
     expect(activation).not.toHaveProperty("zoneScope");
     expect(activation).not.toHaveProperty("serviceMemberRef");
@@ -1159,6 +1200,38 @@ test("direct entry uses runtime identity with retained device cache when local i
     const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
     return Boolean(probe?.intents.find((intent) => intent.type === "runtime.stream.open"));
   })).toBe(true);
+});
+
+test("direct entry uses retained service identity association when identity cache is empty", async ({ page }) => {
+  await installRuntimeHarness(page, {
+    linked: false,
+    includeNvrService: false,
+    includeServiceCatalog: false,
+    includeProjections: false,
+    localAccountCacheFallback: true,
+    localAccountCacheIdentity: false,
+    localAccountCacheRecordIdentity: true,
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator("body")).not.toContainText("Account Required");
+  await expect(page.locator(".cameraTile")).toHaveCount(2);
+  await expect.poll(async () => page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return probe?.intents.find((intent) => intent.type === "runtime.stream.open")?.payload || null;
+  })).not.toBeNull();
+  const streamActivation = await page.evaluate(() => {
+    const probe = (window as Window & { __runtimeProbe?: { intents: Array<Record<string, unknown>> } }).__runtimeProbe;
+    return probe?.intents.find((intent) => intent.type === "runtime.stream.open")?.payload || null;
+  });
+
+  expect(streamActivation).toEqual(expect.objectContaining({
+    identityId: "identity-001",
+    gatewayPk: GATEWAY_PK,
+    servicePk: NVR_SERVICE_PK,
+    service: "nvr",
+  }));
 });
 
 test("direct entry opens auto preview when retained account cache only has camera count", async ({ page }) => {
